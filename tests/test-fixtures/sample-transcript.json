@@ -1,0 +1,23 @@
+{
+  "data": {
+    "transcripts": [
+      {
+        "id": "abc123",
+        "title": "Weekly Sync",
+        "date": 1700000000000,
+        "dateString": "2023-11-14T22:13:20.000Z",
+        "transcript_url": "https://app.fireflies.ai/view/abc123",
+        "participants": ["alice@example.com", "bob@example.com"],
+        "speakers": [
+          { "id": "1", "name": "Alice" },
+          { "id": "2", "name": "Bob" }
+        ],
+        "sentences": [
+          { "index": 0, "speaker_name": "Alice", "text": "Let's start the weekly sync.", "start_time": 0.0 },
+          { "index": 1, "speaker_name": "Bob", "text": "Sure, I finished the report yesterday.", "start_time": 3.2 },
+          { "index": 2, "speaker_name": "Alice", "text": "Great, we decided to ship it Friday.", "start_time": 6.1 }
+        ]
+      }
+    ]
+  }
+}

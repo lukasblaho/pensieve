@@ -1,0 +1,18 @@
+# Secrets / local config
+.env
+.history/
+
+# Runtime data & generated output
+data/*.json
+data/logs/
+notes/
+!data/.gitkeep
+
+# .NET / dotnet-script
+bin/
+obj/
+*.dll
+.dotnet-script/
+
+# OS
+.DS_Store

@@ -1,0 +1,11 @@
+{
+  "summary": "The team reviewed the weekly status and decided on the release date.",
+  "agreements": ["Ship the feature on Friday."],
+  "open_questions": [],
+  "next_actions": [
+    { "task": "Prepare release notes", "owner": "Bob", "due": "Friday" }
+  ],
+  "tags": ["release", "planning"],
+  "keywords": ["weekly status", "release date"],
+  "diagrams": []
+}
