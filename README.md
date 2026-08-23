@@ -139,6 +139,38 @@ pensieve/
   .gitignore
 ```
 
+## Quick install (macOS)
+
+A one-shot installer script (`install.sh`) is included for macOS: it installs Homebrew, the
+.NET SDK, `dotnet-script`, and the GitHub Copilot CLI if missing; clones (or updates) this repo;
+interactively builds your `.env` from `.env.example`; runs the test suite as a sanity check; and
+writes/loads a `launchd` agent so Pensieve runs continuously in the background.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lukasblaho/pensieve/master/install.sh | bash
+```
+
+Or, if you've already cloned the repo:
+
+```bash
+./install.sh
+```
+
+Useful flags/env vars:
+
+- `--non-interactive` — never prompt; uses env vars (`WATCH_FOLDER`, `SUMMARY_FOLDER`,
+  `OUTPUT_DIR`, `POLL_INTERVAL_MINUTES`, ...) or `.env.example` defaults as-is. The launchd agent
+  is written but **not** auto-loaded unless you also set `PENSIEVE_AUTO_LOAD_LAUNCHD=true` (an
+  explicit opt-in, since loading it starts a real background process immediately).
+- `--skip-launchd` — install/configure only, skip the background service setup entirely.
+- `--skip-clone` — reuse an existing checkout instead of cloning/pulling.
+- `PENSIEVE_INSTALL_DIR` (default `$HOME/pensieve`), `PENSIEVE_REPO_URL`, `PENSIEVE_RUN_MODE`
+  (`watch` or `run`, default `watch`) — control where it's installed and how the launchd agent
+  invokes it.
+
+Re-running the installer later (e.g. `PENSIEVE_INSTALL_DIR=~/pensieve ./install.sh`) safely
+pulls the latest changes and re-checks prerequisites; it never overwrites an existing `.env`.
+
 ## Prerequisites
 
 - [.NET SDK](https://dotnet.microsoft.com/) (8.0+ recommended).
