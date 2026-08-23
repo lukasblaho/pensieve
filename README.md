@@ -88,6 +88,11 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
   - **Obsidian**: copies the full meeting folder into a configured vault subfolder.
   - **Notion**: creates one page per meeting (title, tags, summary, agreements, open questions,
     next actions, diagrams as fenced `mermaid` code blocks, keywords) via the Notion API.
+- **Optional macOS Notification Center alert** (`ENABLE_MACOS_NOTIFICATIONS=true`, disabled by
+  default): shows a native notification (meeting title + summary snippet) as soon as a meeting
+  finishes processing, using the built-in `osascript`/AppleScript — no extra dependency (e.g.
+  `terminal-notifier`) required. Optional `MACOS_NOTIFICATION_SOUND` to play a sound. No-ops
+  (with a log warning) on non-macOS systems, and never affects processing/state on failure.
 - Idempotent, resumable state (`data/state.json`) tracks per-meeting analysis/delete/export
   status independently, so a crash or transient failure at any step is safely retried on the next
   pass without reprocessing completed work.
@@ -121,6 +126,7 @@ pensieve/
     GlobalVocabularyStore.csx                # data/vocabulary.json — cross-meeting aggregation
     ObsidianExporter.csx                      # optional: copies meeting folder into a vault
     NotionExporter.csx                          # optional: creates a Notion page per meeting
+    MacNotifier.csx                               # optional: macOS Notification Center alert
     SafeFileName.csx                             # meeting-title slugification
     Orchestrator.csx                              # wires sources -> analysis -> outputs -> state
   tests/

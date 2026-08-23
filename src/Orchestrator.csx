@@ -18,6 +18,7 @@
 #load "GlobalVocabularyStore.csx"
 #load "ObsidianExporter.csx"
 #load "NotionExporter.csx"
+#load "MacNotifier.csx"
 
 using System;
 using System.IO;
@@ -34,6 +35,7 @@ public sealed class Orchestrator
     private readonly GlobalVocabularyStore _vocabularyStore;
     private readonly ObsidianExporter? _obsidianExporter;
     private readonly NotionExporter? _notionExporter;
+    private readonly MacNotifier? _macNotifier;
     private readonly Logger _logger;
 
     public Orchestrator(
@@ -45,6 +47,7 @@ public sealed class Orchestrator
         GlobalVocabularyStore vocabularyStore,
         ObsidianExporter? obsidianExporter,
         NotionExporter? notionExporter,
+        MacNotifier? macNotifier,
         Logger logger)
     {
         _config = config;
@@ -55,6 +58,7 @@ public sealed class Orchestrator
         _vocabularyStore = vocabularyStore;
         _obsidianExporter = obsidianExporter;
         _notionExporter = notionExporter;
+        _macNotifier = macNotifier;
         _logger = logger;
     }
 
@@ -242,6 +246,24 @@ public sealed class Orchestrator
             catch (Exception ex)
             {
                 _logger.Error("Notion export failed; will retry next sync.", ex);
+            }
+        }
+
+        // 8. Optional: show a macOS Notification Center alert that the meeting was processed.
+        if (_config.EnableMacOsNotifications && _macNotifier != null)
+        {
+            try
+            {
+                var title = string.IsNullOrWhiteSpace(transcript.Title) ? "Meeting processed" : transcript.Title!;
+                var subtitle = "Pensieve";
+                var message = !string.IsNullOrWhiteSpace(analysis.Summary)
+                    ? (analysis.Summary.Length > 120 ? analysis.Summary.Substring(0, 117) + "..." : analysis.Summary)
+                    : "Meeting transcript has been processed.";
+                _macNotifier.Notify(title, subtitle, message);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("macOS notification failed; this does not affect processing state.", ex);
             }
         }
 

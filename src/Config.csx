@@ -43,6 +43,10 @@ public sealed class AgentConfig
     public string NotionApiToken { get; init; } = "";
     public string NotionDatabaseId { get; init; } = "";
 
+    // --- macOS Notification Center alert (opt-in) ---
+    public bool EnableMacOsNotifications { get; init; } = false;
+    public string MacOsNotificationSound { get; init; } = "";
+
     public string DataDir { get; init; } = "data";
     public string StateFilePath => Path.Combine(DataDir, "state.json");
     public string VocabularyFilePath => Path.Combine(DataDir, "vocabulary.json");
@@ -133,6 +137,8 @@ public static class ConfigLoader
         var enableNotionExport = GetBool("ENABLE_NOTION_EXPORT", false);
         var notionApiToken = Get("NOTION_API_TOKEN");
         var notionDatabaseId = Get("NOTION_DATABASE_ID");
+        var enableMacOsNotifications = GetBool("ENABLE_MACOS_NOTIFICATIONS", false);
+        var macOsNotificationSound = Get("MACOS_NOTIFICATION_SOUND");
 
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(outputDir)) missing.Add("OUTPUT_DIR");
@@ -180,6 +186,8 @@ public static class ConfigLoader
             EnableNotionExport = enableNotionExport,
             NotionApiToken = notionApiToken,
             NotionDatabaseId = notionDatabaseId,
+            EnableMacOsNotifications = enableMacOsNotifications,
+            MacOsNotificationSound = macOsNotificationSound,
             DataDir = dataDir,
         };
     }

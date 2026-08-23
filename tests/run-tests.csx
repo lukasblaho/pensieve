@@ -17,6 +17,7 @@
 #load "test-FolderWatcher.csx"
 #load "test-ObsidianExporter.csx"
 #load "test-NotionExporter.csx"
+#load "test-MacNotifier.csx"
 #load "test-DateTimeHelper.csx"
 #load "test-KeywordFormatter.csx"
 #load "test-SpeakerTimingAnalyzer.csx"

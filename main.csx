@@ -19,6 +19,7 @@
 #load "src/GlobalVocabularyStore.csx"
 #load "src/ObsidianExporter.csx"
 #load "src/NotionExporter.csx"
+#load "src/MacNotifier.csx"
 #load "src/Orchestrator.csx"
 
 using System;
@@ -66,10 +67,13 @@ ObsidianExporter? obsidianExporter = config.EnableObsidianExport
 NotionExporter? notionExporter = config.EnableNotionExport
     ? new NotionExporter(httpClient, config.NotionApiToken, config.NotionDatabaseId, logger)
     : null;
+MacNotifier? macNotifier = config.EnableMacOsNotifications
+    ? new MacNotifier(logger, config.MacOsNotificationSound)
+    : null;
 
 var orchestrator = new Orchestrator(
     config, folderWatcher, firefliesClient, copilotClient, stateStore, vocabularyStore,
-    obsidianExporter, notionExporter, logger);
+    obsidianExporter, notionExporter, macNotifier, logger);
 
 if (command == "sync")
 {
