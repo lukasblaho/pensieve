@@ -87,8 +87,23 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
 - **Optional, config-gated exports**, both off by default:
   - **Obsidian**: copies the full meeting folder into a configured vault subfolder.
   - **Notion**: creates one page per meeting (title, tags, meeting date, import date, summary,
-    agreements, open questions, next actions, diagrams as fenced `mermaid` code blocks, keywords)
-    via the Notion API.
+    agreements, open questions, next actions, diagrams as fenced `mermaid` code blocks, keywords,
+    related meetings) via the Notion API.
+- **Optional, config-gated related-meeting linking** (`ENABLE_MEETING_LINKING=true`, disabled by
+  default): purely mechanical (no LLM cross-meeting reasoning, preserving the anti-hallucination
+  guarantee) — links a meeting to other meetings that are either part of the same **recurring
+  series** (e.g. daily standups, weekly syncs — detected by normalizing the title and stripping
+  embedded dates/weekdays/times) or share at least `MEETING_LINK_MIN_SHARED_TAGS` (default 3)
+  tags/keywords with it (e.g. several differently-titled meetings about the same initiative).
+  Maintains a mechanical index (`data/meetings-index.json`) of every linked meeting's title,
+  date, folder, tags, and keywords — never re-analyzed by the LLM. Adds a **"Related Meetings"**
+  section to each `note.md` (relative links + dates, capped at `MEETING_LINK_MAX_RELATED`, default
+  15) and `seriesKey`/`relatedMeetingIds` to `metadata.json`. When combined with
+  `ENABLE_NOTION_EXPORT`, related meetings are also listed as a text block in the Notion page;
+  additionally setting `ENABLE_NOTION_RELATION_LINKS=true` sets a native Notion **relation**
+  property (name configurable via `NOTION_RELATION_PROPERTY_NAME`, default `Related Meetings`) —
+  this requires you to first add a self-relation column with that exact name to your Notion
+  database (Notion → database → `+` → property type "Relation" → relate to the same database).
 - **Optional macOS Notification Center alert** (`ENABLE_MACOS_NOTIFICATIONS=true`, disabled by
   default): shows a native notification (meeting title + summary snippet) as soon as a meeting
   finishes processing, using the built-in `osascript`/AppleScript — no extra dependency (e.g.
@@ -125,6 +140,9 @@ pensieve/
     StateStore.csx                         # data/state.json — per-meeting idempotency tracking
     MeetingFolderWriter.csx                 # writes the per-meeting output folder
     GlobalVocabularyStore.csx                # data/vocabulary.json — cross-meeting aggregation
+    SeriesKeyGenerator.csx                    # optional: normalizes titles into series keys
+    MeetingIndexStore.csx                      # optional: data/meetings-index.json — linking index
+    MeetingLinker.csx                           # optional: mechanical related-meeting matching
     ObsidianExporter.csx                      # optional: copies meeting folder into a vault
     NotionExporter.csx                          # optional: creates a Notion page per meeting
     MacNotifier.csx                               # optional: macOS Notification Center alert
@@ -135,7 +153,8 @@ pensieve/
     TestKit.csx                 # assertion helpers + fake HttpMessageHandler for mocking
     test-fixtures/               # mocked Fireflies responses + Copilot CLI response fixtures
     test-*.csx                    # tests per module
-  data/                       # created at runtime: state.json, vocabulary.json, logs/ (gitignored)
+  data/                       # created at runtime: state.json, vocabulary.json,
+                              # meetings-index.json (if enabled), logs/ (gitignored)
   .env.example
   .gitignore
 ```
@@ -339,6 +358,12 @@ export, macOS notification, and Fireflies auto-delete branches) is available in
   is never itself sent back through the LLM, so nothing can be hallucinated across meetings.
   You can freely hand-edit the `aliases` section to merge AI misspellings/inconsistent variants
   into a single canonical term — the app treats it as user-owned data and only ever reads it.
+- **Related-meeting linking is also pure aggregation**: like the global vocabulary,
+  `data/meetings-index.json` and the "Related Meetings" links it produces are 100% mechanical —
+  matching on normalized titles (series) and shared tags/keywords already produced per-meeting.
+  No transcript content from other meetings is ever fed back into the LLM. The feature only
+  starts linking meetings processed after it was enabled — it never retroactively scans/rewrites
+  meetings processed before `ENABLE_MEETING_LINKING` was turned on.
 - **Meeting folder integrity**: each `metadata.json` records the app version and MD5 checksum of
   `note.md`/`transcript.md` at generation time, so you can later detect whether either file was
   manually edited after the fact, or trace output back to the app version that produced it.

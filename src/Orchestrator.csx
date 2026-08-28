@@ -16,6 +16,9 @@
 #load "StateStore.csx"
 #load "MeetingFolderWriter.csx"
 #load "GlobalVocabularyStore.csx"
+#load "MeetingIndexStore.csx"
+#load "MeetingLinker.csx"
+#load "SeriesKeyGenerator.csx"
 #load "ObsidianExporter.csx"
 #load "NotionExporter.csx"
 #load "MacNotifier.csx"
@@ -33,6 +36,7 @@ public sealed class Orchestrator
     private readonly CopilotCliClient _copilotClient;
     private readonly StateStore _stateStore;
     private readonly GlobalVocabularyStore _vocabularyStore;
+    private readonly MeetingIndexStore? _meetingIndexStore;
     private readonly ObsidianExporter? _obsidianExporter;
     private readonly NotionExporter? _notionExporter;
     private readonly MacNotifier? _macNotifier;
@@ -45,6 +49,7 @@ public sealed class Orchestrator
         CopilotCliClient copilotClient,
         StateStore stateStore,
         GlobalVocabularyStore vocabularyStore,
+        MeetingIndexStore? meetingIndexStore,
         ObsidianExporter? obsidianExporter,
         NotionExporter? notionExporter,
         MacNotifier? macNotifier,
@@ -56,6 +61,7 @@ public sealed class Orchestrator
         _copilotClient = copilotClient;
         _stateStore = stateStore;
         _vocabularyStore = vocabularyStore;
+        _meetingIndexStore = meetingIndexStore;
         _obsidianExporter = obsidianExporter;
         _notionExporter = notionExporter;
         _macNotifier = macNotifier;
@@ -188,25 +194,61 @@ public sealed class Orchestrator
             }
         }
 
-        // 3. Write the meeting folder (transcript copy + note + diagrams + keywords). Never
-        // touches the original source file.
-        var meetingFolder = MeetingFolderWriter.WriteMeetingFolder(_config.OutputDir, transcript, analysis);
+        // 3. Compute related-meeting links (purely mechanical — no LLM cross-meeting knowledge),
+        // only when ENABLE_MEETING_LINKING is on. Must happen before writing the folder so the
+        // Related Meetings section can be rendered into note.md.
+        var relatedEntries = new List<MeetingIndexEntry>();
+        var seriesKey = "";
+        if (_config.EnableMeetingLinking && _meetingIndexStore != null)
+        {
+            seriesKey = SeriesKeyGenerator.Generate(transcript.Title);
+            var current = new MeetingIndexEntry
+            {
+                MeetingId = transcript.Id,
+                Title = transcript.Title ?? "",
+                DateEpochMs = transcript.Date,
+                Tags = analysis.Tags,
+                Keywords = analysis.Keywords,
+                SeriesKey = seriesKey,
+            };
+            relatedEntries = MeetingLinker.FindRelated(
+                current, _meetingIndexStore.All(), _config.MeetingLinkMinSharedTags, _config.MeetingLinkMaxRelated);
+        }
 
-        // 4. Append this meeting's tags/keywords into the global, append-only vocabulary.
+        // 4. Write the meeting folder (transcript copy + note + diagrams + keywords + related
+        // meetings). Never touches the original source file.
+        var meetingFolder = MeetingFolderWriter.WriteMeetingFolder(_config.OutputDir, transcript, analysis, relatedEntries, seriesKey);
+
+        // 5. Append this meeting's tags/keywords into the global, append-only vocabulary, and
+        // (when linking is enabled) index this meeting for future related-meeting lookups.
         _vocabularyStore.AddMeeting(transcript.Id, analysis.Tags, analysis.Keywords);
+        if (_config.EnableMeetingLinking && _meetingIndexStore != null)
+        {
+            _meetingIndexStore.AddOrUpdate(new MeetingIndexEntry
+            {
+                MeetingId = transcript.Id,
+                Title = transcript.Title ?? "",
+                DateEpochMs = transcript.Date,
+                FolderPath = meetingFolder,
+                Tags = analysis.Tags,
+                Keywords = analysis.Keywords,
+                SeriesKey = seriesKey,
+            });
+        }
 
-        // 5. Persist state now that analysis + writing succeeded.
+        // 6. Persist state now that analysis + writing succeeded.
         var record = new MeetingRecord
         {
             SourceKey = sourceKey,
             ContentHash = transcript.SourceType == TranscriptSourceType.Folder ? transcript.ContentHash : transcript.Id,
             MeetingFolder = meetingFolder,
             FirefliesId = transcript.FirefliesId,
+            MeetingId = transcript.Id,
             Analyzed = true,
         };
         _stateStore.UpsertRecord(record);
 
-        // 6. Optional: delete the transcript from Fireflies (opt-in, irreversible). Only
+        // 7. Optional: delete the transcript from Fireflies (opt-in, irreversible). Only
         // attempted when an ID was actually resolved — never guessed.
         if (_config.FirefliesAutoDeleteAfterProcessing && transcript.FirefliesId != null && _firefliesClient != null)
         {
@@ -222,7 +264,7 @@ public sealed class Orchestrator
             }
         }
 
-        // 7. Optional exports.
+        // 8. Optional exports.
         if (_config.EnableObsidianExport && _obsidianExporter != null)
         {
             try
@@ -240,8 +282,20 @@ public sealed class Orchestrator
         {
             try
             {
-                await _notionExporter.ExportAsync(transcript, analysis).ConfigureAwait(false);
-                _stateStore.MarkNotionExported(sourceKey);
+                // Resolve each related meeting's already-created Notion page id (if any) so the
+                // native relation property (when enabled) can reference it — never guessed;
+                // related meetings not yet exported to Notion simply have a null page id and are
+                // skipped for the relation property (but still listed in the plain-text block).
+                var notionRelatedMeetings = relatedEntries.Select(e => new NotionRelatedMeetingRef
+                {
+                    Title = e.Title,
+                    DateEpochMs = e.DateEpochMs,
+                    NotionPageId = _stateStore.GetRecordByMeetingId(e.MeetingId)?.NotionPageId,
+                }).ToList();
+
+                var relationPropertyName = _config.EnableNotionRelationLinks ? _config.NotionRelationPropertyName : null;
+                var pageId = await _notionExporter.ExportAsync(transcript, analysis, notionRelatedMeetings, relationPropertyName).ConfigureAwait(false);
+                _stateStore.MarkNotionExported(sourceKey, pageId);
             }
             catch (Exception ex)
             {
@@ -249,7 +303,7 @@ public sealed class Orchestrator
             }
         }
 
-        // 8. Optional: show a macOS Notification Center alert that the meeting was processed.
+        // 9. Optional: show a macOS Notification Center alert that the meeting was processed.
         if (_config.EnableMacOsNotifications && _macNotifier != null)
         {
             try

@@ -72,3 +72,35 @@ TestKit.Section("StateStore: LastProcessedDate tracks the Fireflies API resume p
 
     File.Delete(tempPath);
 }
+
+TestKit.Section("StateStore: GetRecordByMeetingId looks up a record by its stable meetingId, independent of sourceKey");
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pensieve-state-{Guid.NewGuid()}.json");
+    var store = new StateStore(tempPath);
+
+    store.UpsertRecord(new MeetingRecord { SourceKey = "fireflies:abc", ContentHash = "abc", Analyzed = true, MeetingId = "meeting-123" });
+
+    var found = store.GetRecordByMeetingId("meeting-123");
+    TestKit.Assert(found != null && found.SourceKey == "fireflies:abc", "should find the record by meetingId regardless of its sourceKey");
+    TestKit.Assert(store.GetRecordByMeetingId("no-such-id") == null, "should return null for an unknown meetingId");
+
+    File.Delete(tempPath);
+}
+
+TestKit.Section("StateStore: MarkNotionExported persists the returned Notion page id");
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pensieve-state-{Guid.NewGuid()}.json");
+    var store = new StateStore(tempPath);
+
+    store.UpsertRecord(new MeetingRecord { SourceKey = "file1.md", ContentHash = "hash-a", Analyzed = true, MeetingId = "meeting-1" });
+    store.MarkNotionExported("file1.md", "notion-page-abc");
+
+    var record = store.GetRecord("file1.md")!;
+    TestKit.Assert(record.NotionExported, "NotionExported should be true");
+    TestKit.Assert(record.NotionPageId == "notion-page-abc", "the returned Notion page id should be persisted");
+
+    var byMeetingId = store.GetRecordByMeetingId("meeting-1")!;
+    TestKit.Assert(byMeetingId.NotionPageId == "notion-page-abc", "the page id should also be retrievable via GetRecordByMeetingId");
+
+    File.Delete(tempPath);
+}

@@ -44,6 +44,51 @@ TestKit.Section("NotionExporter: creates a page with title, tags, and analysis c
     TestKit.Assert(handler.LastRequestBody!.Contains("mermaid"), "request body should render diagrams as mermaid code blocks");
     TestKit.Assert(handler.LastRequestBody!.Contains("\"Meeting Date\""), "request body should include the meeting date property");
     TestKit.Assert(handler.LastRequestBody!.Contains("\"Imported At\""), "request body should include the imported-at date property");
+    TestKit.Assert(handler.LastRequestBody!.Contains("Related Meetings"), "request body should always include a Related Meetings block, even when empty");
+}
+
+TestKit.Section("NotionExporter: surfaces related meetings as a text block and (when a relation property name is given) a native relation property");
+{
+    var successResponse = "{\"id\":\"page-456\"}";
+    var handler = FakeHttpMessageHandler.Returning(HttpStatusCode.OK, successResponse);
+    var httpClient = new HttpClient(handler);
+    var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
+    var exporter = new NotionExporter(httpClient, "fake-token", "fake-db-id", logger);
+
+    var transcript = new Transcript { Id = "t2", Title = "Daily Standup - Aug 30", Date = 1700000000000 };
+    var analysis = new TranscriptAnalysis { Summary = "x" };
+    var relatedMeetings = new System.Collections.Generic.List<NotionRelatedMeetingRef>
+    {
+        new NotionRelatedMeetingRef { Title = "Daily Standup - Aug 29", DateEpochMs = 1699900000000, NotionPageId = "notion-page-old" },
+        new NotionRelatedMeetingRef { Title = "Daily Standup - Aug 28", DateEpochMs = 1699800000000, NotionPageId = null },
+    };
+
+    var pageId = await exporter.ExportAsync(transcript, analysis, relatedMeetings, relationPropertyName: "Related Meetings");
+
+    TestKit.Assert(pageId == "page-456", "should still return the created page id");
+    TestKit.Assert(handler.LastRequestBody!.Contains("Daily Standup - Aug 29"), "request body should include the related meeting's title in the text block");
+    TestKit.Assert(handler.LastRequestBody!.Contains("\"relation\""), "request body should include a native Notion relation property");
+    TestKit.Assert(handler.LastRequestBody!.Contains("notion-page-old"), "the relation property should reference the related meeting's known Notion page id");
+}
+
+TestKit.Section("NotionExporter: omits the relation property entirely when no related meeting has a known Notion page id");
+{
+    var successResponse = "{\"id\":\"page-789\"}";
+    var handler = FakeHttpMessageHandler.Returning(HttpStatusCode.OK, successResponse);
+    var httpClient = new HttpClient(handler);
+    var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
+    var exporter = new NotionExporter(httpClient, "fake-token", "fake-db-id", logger);
+
+    var transcript = new Transcript { Id = "t3", Title = "Daily Standup - Aug 30" };
+    var analysis = new TranscriptAnalysis { Summary = "x" };
+    var relatedMeetings = new System.Collections.Generic.List<NotionRelatedMeetingRef>
+    {
+        new NotionRelatedMeetingRef { Title = "Daily Standup - Aug 29", DateEpochMs = 1699900000000, NotionPageId = null },
+    };
+
+    await exporter.ExportAsync(transcript, analysis, relatedMeetings, relationPropertyName: "Related Meetings");
+
+    TestKit.Assert(!handler.LastRequestBody!.Contains("\"relation\""), "relation property should be omitted entirely when no related meeting has a known Notion page id yet");
 }
 
 TestKit.Section("NotionExporter: surfaces API errors as exceptions instead of silently failing");

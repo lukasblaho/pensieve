@@ -19,6 +19,17 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
+public sealed class NotionRelatedMeetingRef
+{
+    public string Title { get; set; } = "";
+    public double? DateEpochMs { get; set; }
+
+    /// <summary>The related meeting's own Notion page id, if it was already exported to Notion
+    /// previously. Null when unknown — never guessed, and simply skipped for the native relation
+    /// property in that case (it still appears in the plain-text list).</summary>
+    public string? NotionPageId { get; set; }
+}
+
 public sealed class NotionExporter
 {
     private const string Endpoint = "https://api.notion.com/v1/pages";
@@ -37,10 +48,20 @@ public sealed class NotionExporter
         _logger = logger;
     }
 
-    /// <summary>Creates a Notion page for this meeting: title, tags (multi-select), and body
-    /// blocks for summary/agreements/open questions/next actions/diagrams/keywords.</summary>
-    public async Task<string> ExportAsync(Transcript transcript, TranscriptAnalysis analysis)
+    /// <summary>Creates a Notion page for this meeting: title, tags (multi-select), meeting/import
+    /// dates, and body blocks for summary/agreements/open questions/next actions/diagrams/
+    /// keywords/related meetings. <paramref name="relatedMeetings"/> is only non-empty when
+    /// ENABLE_MEETING_LINKING is on. When <paramref name="relationPropertyName"/> is non-null
+    /// (ENABLE_NOTION_RELATION_LINKS), a native Notion relation property is also set using the
+    /// related meetings' already-known Notion page ids (requires that relation column to already
+    /// exist in the target database).</summary>
+    public async Task<string> ExportAsync(
+        Transcript transcript,
+        TranscriptAnalysis analysis,
+        IReadOnlyList<NotionRelatedMeetingRef>? relatedMeetings = null,
+        string? relationPropertyName = null)
     {
+        relatedMeetings ??= Array.Empty<NotionRelatedMeetingRef>();
         var title = string.IsNullOrWhiteSpace(transcript.Title) ? "not specified" : transcript.Title;
         var meetingDate = transcript.GetDateTimeOffset();
         var importedAt = DateTimeOffset.UtcNow;
@@ -69,11 +90,24 @@ public sealed class NotionExporter
             };
         }
 
+        if (!string.IsNullOrWhiteSpace(relationPropertyName))
+        {
+            var relatedPageIds = relatedMeetings
+                .Where(r => !string.IsNullOrWhiteSpace(r.NotionPageId))
+                .Select(r => new { id = r.NotionPageId })
+                .ToArray();
+
+            if (relatedPageIds.Length > 0)
+            {
+                properties[relationPropertyName] = new { relation = relatedPageIds };
+            }
+        }
+
         var payload = new Dictionary<string, object?>
         {
             ["parent"] = new Dictionary<string, object?> { ["database_id"] = _databaseId },
             ["properties"] = properties,
-            ["children"] = BuildChildBlocks(transcript, analysis),
+            ["children"] = BuildChildBlocks(transcript, analysis, relatedMeetings),
         };
 
         var requestBody = JsonSerializer.Serialize(payload);
@@ -101,7 +135,7 @@ public sealed class NotionExporter
         return pageId;
     }
 
-    private static object[] BuildChildBlocks(Transcript transcript, TranscriptAnalysis analysis)
+    private static object[] BuildChildBlocks(Transcript transcript, TranscriptAnalysis analysis, IReadOnlyList<NotionRelatedMeetingRef> relatedMeetings)
     {
         var blocks = new List<object>();
 
@@ -140,6 +174,25 @@ public sealed class NotionExporter
 
         blocks.Add(Heading2("Keywords"));
         blocks.Add(Paragraph(analysis.Keywords.Count == 0 ? "not specified" : string.Join(", ", analysis.Keywords)));
+
+        // Related meetings — purely mechanical links (recurring series or shared tags/keywords),
+        // never LLM-derived, so no cross-meeting content is invented here.
+        blocks.Add(Heading2("Related Meetings"));
+        if (relatedMeetings.Count == 0)
+        {
+            blocks.Add(Paragraph("not specified"));
+        }
+        else
+        {
+            foreach (var related in relatedMeetings)
+            {
+                var relatedTitle = string.IsNullOrWhiteSpace(related.Title) ? "not specified" : related.Title;
+                var relatedDate = related.DateEpochMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds((long)related.DateEpochMs.Value).ToString("yyyy-MM-dd")
+                    : "not specified";
+                blocks.Add(Paragraph($"{relatedTitle} — {relatedDate}"));
+            }
+        }
 
         return blocks.ToArray();
     }

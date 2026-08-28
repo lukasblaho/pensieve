@@ -47,9 +47,22 @@ public sealed class AgentConfig
     public bool EnableMacOsNotifications { get; init; } = false;
     public string MacOsNotificationSound { get; init; } = "";
 
+    // --- Related-meeting linking (opt-in): purely mechanical (no LLM cross-meeting reasoning) —
+    // groups recurring meetings (e.g. daily standups) by normalized title, and links
+    // differently-titled meetings that share enough tags/keywords. ---
+    public bool EnableMeetingLinking { get; init; } = false;
+    public int MeetingLinkMinSharedTags { get; init; } = 3;
+    public int MeetingLinkMaxRelated { get; init; } = 15;
+
+    // Requires a self-relation column already added by the user to their Notion database (see
+    // README); only meaningful when EnableMeetingLinking and EnableNotionExport are both true.
+    public bool EnableNotionRelationLinks { get; init; } = false;
+    public string NotionRelationPropertyName { get; init; } = "Related Meetings";
+
     public string DataDir { get; init; } = "data";
     public string StateFilePath => Path.Combine(DataDir, "state.json");
     public string VocabularyFilePath => Path.Combine(DataDir, "vocabulary.json");
+    public string MeetingsIndexFilePath => Path.Combine(DataDir, "meetings-index.json");
     public string LogsDir => Path.Combine(DataDir, "logs");
 }
 
@@ -139,6 +152,11 @@ public static class ConfigLoader
         var notionDatabaseId = Get("NOTION_DATABASE_ID");
         var enableMacOsNotifications = GetBool("ENABLE_MACOS_NOTIFICATIONS", false);
         var macOsNotificationSound = Get("MACOS_NOTIFICATION_SOUND");
+        var enableMeetingLinking = GetBool("ENABLE_MEETING_LINKING", false);
+        var meetingLinkMinSharedTagsRaw = Get("MEETING_LINK_MIN_SHARED_TAGS", "3");
+        var meetingLinkMaxRelatedRaw = Get("MEETING_LINK_MAX_RELATED", "15");
+        var enableNotionRelationLinks = GetBool("ENABLE_NOTION_RELATION_LINKS", false);
+        var notionRelationPropertyName = Get("NOTION_RELATION_PROPERTY_NAME", "Related Meetings");
 
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(outputDir)) missing.Add("OUTPUT_DIR");
@@ -154,6 +172,8 @@ public static class ConfigLoader
         if (enableObsidianExport && string.IsNullOrWhiteSpace(obsidianVaultPath)) missing.Add("OBSIDIAN_VAULT_PATH");
         if (enableNotionExport && string.IsNullOrWhiteSpace(notionApiToken)) missing.Add("NOTION_API_TOKEN");
         if (enableNotionExport && string.IsNullOrWhiteSpace(notionDatabaseId)) missing.Add("NOTION_DATABASE_ID");
+        if (enableNotionRelationLinks && !enableNotionExport) missing.Add("ENABLE_NOTION_EXPORT (required when ENABLE_NOTION_RELATION_LINKS is true)");
+        if (enableNotionRelationLinks && !enableMeetingLinking) missing.Add("ENABLE_MEETING_LINKING (required when ENABLE_NOTION_RELATION_LINKS is true)");
 
         if (missing.Count > 0)
         {
@@ -166,6 +186,18 @@ public static class ConfigLoader
         {
             throw new InvalidOperationException(
                 $"POLL_INTERVAL_MINUTES must be a positive integer, got: '{pollIntervalRaw}'.");
+        }
+
+        if (!int.TryParse(meetingLinkMinSharedTagsRaw, out var meetingLinkMinSharedTags) || meetingLinkMinSharedTags < 1)
+        {
+            throw new InvalidOperationException(
+                $"MEETING_LINK_MIN_SHARED_TAGS must be a positive integer, got: '{meetingLinkMinSharedTagsRaw}'.");
+        }
+
+        if (!int.TryParse(meetingLinkMaxRelatedRaw, out var meetingLinkMaxRelated) || meetingLinkMaxRelated < 1)
+        {
+            throw new InvalidOperationException(
+                $"MEETING_LINK_MAX_RELATED must be a positive integer, got: '{meetingLinkMaxRelatedRaw}'.");
         }
 
         return new AgentConfig
@@ -188,6 +220,11 @@ public static class ConfigLoader
             NotionDatabaseId = notionDatabaseId,
             EnableMacOsNotifications = enableMacOsNotifications,
             MacOsNotificationSound = macOsNotificationSound,
+            EnableMeetingLinking = enableMeetingLinking,
+            MeetingLinkMinSharedTags = meetingLinkMinSharedTags,
+            MeetingLinkMaxRelated = meetingLinkMaxRelated,
+            EnableNotionRelationLinks = enableNotionRelationLinks,
+            NotionRelationPropertyName = string.IsNullOrWhiteSpace(notionRelationPropertyName) ? "Related Meetings" : notionRelationPropertyName,
             DataDir = dataDir,
         };
     }

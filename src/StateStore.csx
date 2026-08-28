@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -28,6 +29,12 @@ public sealed class MeetingRecord
     [JsonPropertyName("firefliesId")]
     public string? FirefliesId { get; set; }
 
+    /// <summary>The transcript's stable identity (Transcript.Id), used to look up a meeting's
+    /// record by meetingId (e.g. to resolve a related meeting's already-created Notion page id)
+    /// independently of its sourceKey.</summary>
+    [JsonPropertyName("meetingId")]
+    public string? MeetingId { get; set; }
+
     [JsonPropertyName("analyzed")]
     public bool Analyzed { get; set; }
 
@@ -39,6 +46,12 @@ public sealed class MeetingRecord
 
     [JsonPropertyName("notionExported")]
     public bool NotionExported { get; set; }
+
+    /// <summary>The Notion page id created for this meeting, once exported. Used so later
+    /// meetings can link back to this one via a Notion relation property. Null when not yet
+    /// (or never) exported to Notion.</summary>
+    [JsonPropertyName("notionPageId")]
+    public string? NotionPageId { get; set; }
 }
 
 public sealed class AgentState
@@ -90,6 +103,15 @@ public sealed class StateStore
         return _state.Meetings.TryGetValue(sourceKey, out var record) ? record : null;
     }
 
+    /// <summary>Looks up a meeting's record by its stable meetingId (Transcript.Id) rather than
+    /// its sourceKey — used to resolve a related meeting's already-created Notion page id.
+    /// Returns null if no record with that meetingId has been persisted (e.g. from before this
+    /// field existed, or the meeting hasn't been processed).</summary>
+    public MeetingRecord? GetRecordByMeetingId(string meetingId)
+    {
+        return _state.Meetings.Values.FirstOrDefault(r => r.MeetingId == meetingId);
+    }
+
     /// <summary>True if this source key was already analyzed with the exact same content hash
     /// (i.e. nothing changed since last time it was processed).</summary>
     public bool IsUpToDate(string sourceKey, string contentHash)
@@ -122,11 +144,15 @@ public sealed class StateStore
         }
     }
 
-    public void MarkNotionExported(string sourceKey)
+    public void MarkNotionExported(string sourceKey, string? notionPageId = null)
     {
         if (_state.Meetings.TryGetValue(sourceKey, out var record))
         {
             record.NotionExported = true;
+            if (!string.IsNullOrWhiteSpace(notionPageId))
+            {
+                record.NotionPageId = notionPageId;
+            }
             Save();
         }
     }

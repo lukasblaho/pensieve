@@ -12,6 +12,7 @@
 #load "../src/Models.csx"
 #load "../src/DateTimeHelper.csx"
 #load "../src/Version.csx"
+#load "../src/MeetingIndexStore.csx"
 
 using System;
 using System.Collections.Generic;
@@ -220,6 +221,52 @@ TestKit.Section("MeetingFolderWriter: speaker present in only timing or only qua
     Directory.Delete(outputDir, recursive: true);
 }
 
+
+TestKit.Section("MeetingFolderWriter: renders 'not specified' for Related Meetings when linking is disabled/no related meetings");
+{
+    var outputDir = Path.Combine(Path.GetTempPath(), $"pensieve-notes-{Guid.NewGuid()}");
+    var transcript = new Transcript { Id = "rel-none", Title = "Solo Meeting", RawText = "Alice: hi." };
+    var analysis = new TranscriptAnalysis { Summary = "x" };
+
+    var folder = MeetingFolderWriter.WriteMeetingFolder(outputDir, transcript, analysis);
+    var note = File.ReadAllText(Path.Combine(folder, "note.md"));
+    TestKit.Assert(note.Contains("## Related Meetings"), "note.md should always include a Related Meetings section header");
+
+    var metadataJson = File.ReadAllText(Path.Combine(folder, "metadata.json"));
+    using var doc = JsonDocument.Parse(metadataJson);
+    TestKit.Assert(doc.RootElement.GetProperty("relatedMeetingIds").GetArrayLength() == 0, "relatedMeetingIds should be empty when no related meetings were passed");
+    TestKit.Assert(doc.RootElement.GetProperty("seriesKey").ValueKind == JsonValueKind.Null, "seriesKey should be null when not provided");
+
+    Directory.Delete(outputDir, recursive: true);
+}
+
+TestKit.Section("MeetingFolderWriter: renders linked Related Meetings with relative note.md links and dates");
+{
+    var outputDir = Path.Combine(Path.GetTempPath(), $"pensieve-notes-{Guid.NewGuid()}");
+    var transcript = new Transcript { Id = "rel-cur", Title = "Daily Standup - Aug 30", Date = 1700000000000, RawText = "Alice: status." };
+    var analysis = new TranscriptAnalysis { Summary = "x" };
+
+    var otherFolder = Path.Combine(outputDir, "2026-08-28--0900--daily-standup--rel-old");
+    Directory.CreateDirectory(otherFolder);
+    var related = new List<MeetingIndexEntry>
+    {
+        new MeetingIndexEntry { MeetingId = "rel-old", Title = "Daily Standup - Aug 28", DateEpochMs = 1699900000000, FolderPath = otherFolder, SeriesKey = "daily standup" },
+    };
+
+    var folder = MeetingFolderWriter.WriteMeetingFolder(outputDir, transcript, analysis, related, "daily standup");
+    var note = File.ReadAllText(Path.Combine(folder, "note.md"));
+
+    TestKit.Assert(note.Contains("Daily Standup - Aug 28"), "note.md should list the related meeting's title");
+    TestKit.Assert(note.Contains("../2026-08-28--0900--daily-standup--rel-old/note.md") || note.Contains("2026-08-28--0900--daily-standup--rel-old/note.md"), "note.md should link to the related meeting's note.md via a relative path");
+
+    var metadataJson = File.ReadAllText(Path.Combine(folder, "metadata.json"));
+    using var doc = JsonDocument.Parse(metadataJson);
+    TestKit.Assert(doc.RootElement.GetProperty("seriesKey").GetString() == "daily standup", "metadata.json should record the series key");
+    var relatedIds = doc.RootElement.GetProperty("relatedMeetingIds");
+    TestKit.Assert(relatedIds.GetArrayLength() == 1 && relatedIds[0].GetString() == "rel-old", "metadata.json should record the related meeting id");
+
+    Directory.Delete(outputDir, recursive: true);
+}
 
 {
     var outputDir = Path.Combine(Path.GetTempPath(), $"pensieve-notes-{Guid.NewGuid()}");

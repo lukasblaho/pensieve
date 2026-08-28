@@ -21,6 +21,9 @@
 #load "test-DateTimeHelper.csx"
 #load "test-KeywordFormatter.csx"
 #load "test-SpeakerTimingAnalyzer.csx"
+#load "test-SeriesKeyGenerator.csx"
+#load "test-MeetingIndexStore.csx"
+#load "test-MeetingLinker.csx"
 
 using System;
 

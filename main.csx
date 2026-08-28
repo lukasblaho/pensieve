@@ -17,6 +17,9 @@
 #load "src/CopilotCliClient.csx"
 #load "src/StateStore.csx"
 #load "src/GlobalVocabularyStore.csx"
+#load "src/MeetingIndexStore.csx"
+#load "src/MeetingLinker.csx"
+#load "src/SeriesKeyGenerator.csx"
 #load "src/ObsidianExporter.csx"
 #load "src/NotionExporter.csx"
 #load "src/MacNotifier.csx"
@@ -61,6 +64,7 @@ FirefliesClient? firefliesClient = (config.EnableFirefliesApiSource || config.Fi
 var copilotClient = new CopilotCliClient(logger, config.CopilotModel, config.CopilotExecutable);
 var stateStore = new StateStore(config.StateFilePath);
 var vocabularyStore = new GlobalVocabularyStore(config.VocabularyFilePath);
+var meetingIndexStore = config.EnableMeetingLinking ? new MeetingIndexStore(config.MeetingsIndexFilePath) : null;
 ObsidianExporter? obsidianExporter = config.EnableObsidianExport
     ? new ObsidianExporter(config.ObsidianVaultPath, config.ObsidianSubfolder, logger)
     : null;
@@ -73,7 +77,7 @@ MacNotifier? macNotifier = config.EnableMacOsNotifications
 
 var orchestrator = new Orchestrator(
     config, folderWatcher, firefliesClient, copilotClient, stateStore, vocabularyStore,
-    obsidianExporter, notionExporter, macNotifier, logger);
+    meetingIndexStore, obsidianExporter, notionExporter, macNotifier, logger);
 
 if (command == "sync")
 {

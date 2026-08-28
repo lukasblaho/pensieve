@@ -20,6 +20,7 @@
 #load "KeywordFormatter.csx"
 #load "Version.csx"
 #load "SpeakerTimingAnalyzer.csx"
+#load "MeetingIndexStore.csx"
 
 using System;
 using System.Collections.Generic;
@@ -54,9 +55,17 @@ public static class MeetingFolderWriter
     }
 
     /// <summary>Writes the full meeting folder (transcript copy, note, diagrams, keywords,
-    /// metadata) and returns the folder path.</summary>
-    public static string WriteMeetingFolder(string outputDir, Transcript transcript, TranscriptAnalysis analysis)
+    /// metadata) and returns the folder path. <paramref name="relatedMeetings"/> and
+    /// <paramref name="seriesKey"/> are only non-empty when ENABLE_MEETING_LINKING is on; when
+    /// linking is disabled they are simply omitted/blank, never guessed.</summary>
+    public static string WriteMeetingFolder(
+        string outputDir,
+        Transcript transcript,
+        TranscriptAnalysis analysis,
+        IReadOnlyList<MeetingIndexEntry>? relatedMeetings = null,
+        string? seriesKey = null)
     {
+        relatedMeetings ??= Array.Empty<MeetingIndexEntry>();
         var folderPath = BuildMeetingFolderPath(outputDir, transcript);
         Directory.CreateDirectory(folderPath);
 
@@ -67,7 +76,7 @@ public static class MeetingFolderWriter
 
         // 2. Analysis note with trimmed YAML frontmatter (tags only).
         var notePath = Path.Combine(folderPath, "note.md");
-        var noteMarkdown = BuildNoteMarkdown(transcript, analysis);
+        var noteMarkdown = BuildNoteMarkdown(transcript, analysis, folderPath, relatedMeetings);
         File.WriteAllText(notePath, noteMarkdown);
 
         // 3. Diagrams (only when present).
@@ -97,7 +106,8 @@ public static class MeetingFolderWriter
 
         // 5. Metadata: app version + MD5 checksums of note.md/transcript.md, computed from the
         // files actually written above, plus per-speaker statistics (deterministic speaking
-        // time/turn count merged with the LLM-assessed quality ratings, by speaker name).
+        // time/turn count merged with the LLM-assessed quality ratings, by speaker name), plus
+        // (when ENABLE_MEETING_LINKING is on) this meeting's series key and related meeting ids.
         var speakerStatistics = BuildSpeakerStatistics(transcript, analysis);
         var metadataJson = JsonSerializer.Serialize(new
         {
@@ -109,6 +119,8 @@ public static class MeetingFolderWriter
                 ["transcript.md"] = new { md5 = ComputeMd5(transcriptPath) },
             },
             speakerStatistics,
+            seriesKey = string.IsNullOrWhiteSpace(seriesKey) ? null : seriesKey,
+            relatedMeetingIds = relatedMeetings.Select(m => m.MeetingId).ToList(),
         }, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(Path.Combine(folderPath, "metadata.json"), metadataJson);
 
@@ -175,8 +187,13 @@ public static class MeetingFolderWriter
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    public static string BuildNoteMarkdown(Transcript transcript, TranscriptAnalysis analysis)
+    public static string BuildNoteMarkdown(
+        Transcript transcript,
+        TranscriptAnalysis analysis,
+        string? folderPath = null,
+        IReadOnlyList<MeetingIndexEntry>? relatedMeetings = null)
     {
+        relatedMeetings ??= Array.Empty<MeetingIndexEntry>();
         var sb = new StringBuilder();
         var localDate = GetLocalDate(transcript);
         var dateDisplay = localDate.ToString("yyyy-MM-dd HH:mm 'Bratislava'");
@@ -278,7 +295,54 @@ public static class MeetingFolderWriter
         sb.AppendLine(analysis.Keywords.Count == 0 ? Placeholder : string.Join(", ", analysis.Keywords.Select(KeywordFormatter.ToCamelCase)));
         sb.AppendLine();
 
+        // Related meetings (only rendered when ENABLE_MEETING_LINKING is on): purely mechanical
+        // links — same recurring series (e.g. standups) or shared tags/keywords with other
+        // meetings — never LLM-derived, so no cross-meeting content is invented.
+        sb.AppendLine("## Related Meetings");
+        sb.AppendLine();
+        if (relatedMeetings.Count == 0)
+        {
+            sb.AppendLine($"- {Placeholder}");
+        }
+        else
+        {
+            foreach (var related in relatedMeetings)
+            {
+                var relatedTitle = string.IsNullOrWhiteSpace(related.Title) ? Placeholder : related.Title;
+                var relatedDate = related.DateEpochMs.HasValue
+                    ? DateTimeHelper.ToBratislava(DateTimeOffset.FromUnixTimeMilliseconds((long)related.DateEpochMs.Value)).ToString("yyyy-MM-dd")
+                    : Placeholder;
+                var relativeLink = BuildRelativeNoteLink(folderPath, related.FolderPath);
+                sb.AppendLine(relativeLink != null
+                    ? $"- [{relatedTitle}]({relativeLink}) — {relatedDate}"
+                    : $"- {relatedTitle} — {relatedDate}");
+            }
+        }
+        sb.AppendLine();
+
         return sb.ToString();
+    }
+
+    /// <summary>Builds a relative markdown link from this meeting's folder to another meeting's
+    /// note.md, so Related Meetings links keep working if OUTPUT_DIR is moved/copied elsewhere
+    /// (e.g. into an Obsidian vault). Returns null (never guessed) when either folder path is
+    /// unknown, falling back to plain text instead of a broken link.</summary>
+    private static string? BuildRelativeNoteLink(string? fromFolder, string? toFolder)
+    {
+        if (string.IsNullOrWhiteSpace(fromFolder) || string.IsNullOrWhiteSpace(toFolder))
+        {
+            return null;
+        }
+
+        try
+        {
+            var relativeFolder = Path.GetRelativePath(fromFolder, toFolder);
+            return Path.Combine(relativeFolder, "note.md").Replace('\\', '/');
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static void AppendBulletList(StringBuilder sb, List<string>? items)
