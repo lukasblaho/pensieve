@@ -109,6 +109,38 @@ Rules you MUST follow:
         throw new InvalidOperationException("copilot CLI invocation failed after retries.", lastException);
     }
 
+    /// <summary>
+    /// Reads the names of MCP servers configured in the user's global
+    /// ~/.copilot/mcp-config.json (if present) so they can all be explicitly disabled for this
+    /// invocation. Never throws — any read/parse failure just yields an empty list, since this is
+    /// a best-effort optimization, not something the analysis should ever fail over.
+    /// </summary>
+    private static System.Collections.Generic.List<string> GetConfiguredMcpServerNames()
+    {
+        var names = new System.Collections.Generic.List<string>();
+        try
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var configPath = System.IO.Path.Combine(home, ".copilot", "mcp-config.json");
+            if (!System.IO.File.Exists(configPath)) return names;
+
+            using var doc = JsonDocument.Parse(System.IO.File.ReadAllText(configPath));
+            if (doc.RootElement.TryGetProperty("mcpServers", out var servers) && servers.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var server in servers.EnumerateObject())
+                {
+                    names.Add(server.Name);
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort only; if the config can't be read/parsed, just proceed without
+            // explicitly disabling anything beyond the built-ins.
+        }
+        return names;
+    }
+
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunProcessAsync(string prompt)
     {
         var psi = new ProcessStartInfo
@@ -131,6 +163,19 @@ Rules you MUST follow:
         // Disable all tools: analysis must be based only on the transcript text in the prompt,
         // never on file/bash/web access, and must never reach across to other meetings.
         psi.ArgumentList.Add("--available-tools=");
+        // Also disable every MCP server (built-in + whatever the user has configured globally in
+        // ~/.copilot/mcp-config.json, e.g. Jira/Confluence/Azure/Honeycomb/etc.). Even with
+        // --available-tools= restricting exposure, the CLI still loads each server's static tool
+        // definitions into the system prompt, which can exceed the model's context budget and
+        // make every invocation fail with exit code 1 and no stderr. Pensieve never needs any
+        // tool, so proactively disabling all configured servers avoids that failure mode
+        // regardless of how many/which MCP servers the user has installed.
+        psi.ArgumentList.Add("--disable-builtin-mcps");
+        foreach (var serverName in GetConfiguredMcpServerNames())
+        {
+            psi.ArgumentList.Add("--disable-mcp-server");
+            psi.ArgumentList.Add(serverName);
+        }
 
         if (!string.IsNullOrWhiteSpace(_model) && !string.Equals(_model, "auto", StringComparison.OrdinalIgnoreCase))
         {
