@@ -86,8 +86,9 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
   resolved, deletion is skipped and a warning is logged — **never guessed**.
 - **Optional, config-gated exports**, both off by default:
   - **Obsidian**: copies the full meeting folder into a configured vault subfolder.
-  - **Notion**: creates one page per meeting (title, tags, summary, agreements, open questions,
-    next actions, diagrams as fenced `mermaid` code blocks, keywords) via the Notion API.
+  - **Notion**: creates one page per meeting (title, tags, meeting date, import date, summary,
+    agreements, open questions, next actions, diagrams as fenced `mermaid` code blocks, keywords)
+    via the Notion API.
 - **Optional macOS Notification Center alert** (`ENABLE_MACOS_NOTIFICATIONS=true`, disabled by
   default): shows a native notification (meeting title + summary snippet) as soon as a meeting
   finishes processing, using the built-in `osascript`/AppleScript — no extra dependency (e.g.
@@ -308,6 +309,13 @@ launchctl unload ~/Library/LaunchAgents/com.pensieve.plist
 
 (`run` with `POLL_INTERVAL_MINUTES` also works instead of `watch`, if you prefer periodic
 polling over live filesystem events.)
+
+## n8n simulation
+
+An importable [n8n](https://n8n.io) workflow that simulates this app's core folder-watch →
+Copilot CLI analysis → per-meeting output pipeline (plus disabled-by-default Obsidian/Notion
+export, macOS notification, and Fireflies auto-delete branches) is available in
+[`n8n/`](n8n/) — see [`n8n/README.md`](n8n/README.md) for setup and configuration.
 
 ## Notes on behavior
 

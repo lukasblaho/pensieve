@@ -22,7 +22,7 @@ TestKit.Section("NotionExporter: creates a page with title, tags, and analysis c
     var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
     var exporter = new NotionExporter(httpClient, "fake-token", "fake-db-id", logger);
 
-    var transcript = new Transcript { Id = "t1", Title = "Weekly Sync" };
+    var transcript = new Transcript { Id = "t1", Title = "Weekly Sync", Date = 1700000000000 };
     var analysis = new TranscriptAnalysis
     {
         Summary = "This is the summary.",
@@ -42,6 +42,8 @@ TestKit.Section("NotionExporter: creates a page with title, tags, and analysis c
     TestKit.Assert(handler.LastRequestBody!.Contains("release"), "request body should include tags");
     TestKit.Assert(handler.LastRequestBody!.Contains("Ship on Friday."), "request body should include agreements content");
     TestKit.Assert(handler.LastRequestBody!.Contains("mermaid"), "request body should render diagrams as mermaid code blocks");
+    TestKit.Assert(handler.LastRequestBody!.Contains("\"Meeting Date\""), "request body should include the meeting date property");
+    TestKit.Assert(handler.LastRequestBody!.Contains("\"Imported At\""), "request body should include the imported-at date property");
 }
 
 TestKit.Section("NotionExporter: surfaces API errors as exceptions instead of silently failing");

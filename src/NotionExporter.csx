@@ -42,21 +42,37 @@ public sealed class NotionExporter
     public async Task<string> ExportAsync(Transcript transcript, TranscriptAnalysis analysis)
     {
         var title = string.IsNullOrWhiteSpace(transcript.Title) ? "not specified" : transcript.Title;
+        var meetingDate = transcript.GetDateTimeOffset();
+        var importedAt = DateTimeOffset.UtcNow;
+
+        var properties = new Dictionary<string, object?>
+        {
+            ["Name"] = new
+            {
+                title = new object[] { new { text = new { content = title } } }
+            },
+            ["Tags"] = new
+            {
+                multi_select = analysis.Tags.Select(t => new { name = KeywordFormatter.ToCamelCase(t) }).ToArray()
+            },
+            ["Imported At"] = new
+            {
+                date = new { start = importedAt.ToString("yyyy-MM-ddTHH:mm:ssZ") }
+            },
+        };
+
+        if (meetingDate.HasValue)
+        {
+            properties["Meeting Date"] = new
+            {
+                date = new { start = meetingDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ") }
+            };
+        }
 
         var payload = new Dictionary<string, object?>
         {
             ["parent"] = new Dictionary<string, object?> { ["database_id"] = _databaseId },
-            ["properties"] = new Dictionary<string, object?>
-            {
-                ["Name"] = new
-                {
-                    title = new object[] { new { text = new { content = title } } }
-                },
-                ["Tags"] = new
-                {
-                    multi_select = analysis.Tags.Select(t => new { name = KeywordFormatter.ToCamelCase(t) }).ToArray()
-                },
-            },
+            ["properties"] = properties,
             ["children"] = BuildChildBlocks(transcript, analysis),
         };
 
