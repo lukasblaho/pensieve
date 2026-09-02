@@ -129,3 +129,49 @@ TestKit.Section("TranscriptFileParser: falls back gracefully when no matching su
 
     Directory.Delete(dir, recursive: true);
 }
+
+TestKit.Section("TranscriptFileParser: ReadFileWithRetry survives a transient exclusive file lock (e.g. cloud-sync deadlock)");
+{
+    var path = Path.Combine(Path.GetTempPath(), $"transcript-{Guid.NewGuid()}.md");
+    File.WriteAllText(path, "# Locked Briefly\n\nAlice: hi\n");
+
+    // Hold an exclusive (FileShare.None) lock briefly on a background thread, simulating a
+    // transient cloud-sync lock ("Resource deadlock avoided"). ReadFileWithRetry should retry
+    // past this instead of failing immediately.
+    using var gate = new System.Threading.ManualResetEventSlim(false);
+    var lockTask = System.Threading.Tasks.Task.Run(() =>
+    {
+        using var exclusive = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        gate.Set();
+        System.Threading.Thread.Sleep(400);
+    });
+
+    gate.Wait();
+    var content = TranscriptFileParser.ReadFileWithRetry(path);
+    lockTask.Wait();
+
+    TestKit.Assert(content.Contains("Locked Briefly"), "should eventually read the file's content once the transient lock is released");
+
+    File.Delete(path);
+}
+
+TestKit.Section("TranscriptFileParser: ReadFileWithRetry surfaces the exception when the file is never unlocked");
+{
+    var path = Path.Combine(Path.GetTempPath(), $"transcript-{Guid.NewGuid()}.md");
+    File.WriteAllText(path, "# Always Locked\n\nAlice: hi\n");
+
+    using var exclusive = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    var threw = false;
+    try
+    {
+        TranscriptFileParser.ReadFileWithRetry(path);
+    }
+    catch (IOException)
+    {
+        threw = true;
+    }
+
+    TestKit.Assert(threw, "should surface an IOException after exhausting all retries if the lock never clears");
+
+    File.Delete(path);
+}

@@ -20,6 +20,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 public static class TranscriptFileParser
 {
@@ -29,6 +30,34 @@ public static class TranscriptFileParser
     private const string TranscriptMarker = "-transcript-";
     private const string SummaryMarker = "-summary-";
 
+    // Cloud-synced watch folders (e.g. Google Drive) can transiently lock a file mid-sync,
+    // surfacing as IOException: "Resource deadlock avoided". A single failed read would
+    // otherwise fail this file on every single sync pass at the exact same instant. Retry a
+    // few times with a short delay before giving up (at which point the caller's normal
+    // "will retry next sync" behavior still applies).
+    private static readonly int[] ReadRetryDelaysMs = { 200, 500, 1000 };
+
+    /// <summary>
+    /// Reads a file's full text, retrying a few times with a short delay on IOException (e.g. a
+    /// transient cloud-sync file lock) before letting the exception propagate.
+    /// </summary>
+    public static string ReadFileWithRetry(string filePath)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                return reader.ReadToEnd();
+            }
+            catch (IOException) when (attempt < ReadRetryDelaysMs.Length)
+            {
+                Thread.Sleep(ReadRetryDelaysMs[attempt]);
+            }
+        }
+    }
+
     /// <summary>
     /// Parses a dropped transcript file. If <paramref name="summaryFolder"/> is provided and a
     /// matching "<Title>-summary-<timestamp>.md" file exists there (Fireflies' native export
@@ -37,7 +66,7 @@ public static class TranscriptFileParser
     /// </summary>
     public static Transcript Parse(string filePath, string? summaryFolder = null)
     {
-        var raw = File.ReadAllText(filePath);
+        var raw = ReadFileWithRetry(filePath);
 
         var frontmatter = "";
         var body = raw;
@@ -155,7 +184,7 @@ public static class TranscriptFileParser
                 return null;
             }
 
-            var summaryText = File.ReadAllText(summaryPath);
+            var summaryText = ReadFileWithRetry(summaryPath);
 
             var meta = new SummaryMetadata();
 
