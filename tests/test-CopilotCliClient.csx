@@ -153,6 +153,57 @@ else
         File.Delete(scriptPath);
         if (File.Exists(counterFile)) File.Delete(counterFile);
     }
+
+    TestKit.Section("CopilotCliClient: a malformed-JSON response triggers a fresh CLI invocation (regeneration), not a re-parse of the same broken text");
+    {
+        var fixturePath = Path.Combine(Directory.GetCurrentDirectory(), "tests", "test-fixtures", "sample-copilot-response-text.txt");
+        var responseText = File.ReadAllText(fixturePath);
+        var counterFile = Path.Combine(Path.GetTempPath(), $"pensieve-fake-copilot-json-counter-{Guid.NewGuid()}");
+
+        // Exit code 0 both times (so the process-level retry loop is not what saves this), but
+        // the FIRST invocation's stdout is invalid JSON; only the SECOND invocation returns a
+        // valid response. Re-parsing the same (first) broken string could never succeed — only
+        // an actual second invocation of the executable can produce this valid text.
+        var scriptPath = WriteFakeCopilotScriptWithBadJsonThenValid(responseText, counterFile);
+        var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
+        var client = new CopilotCliClient(logger, model: "auto", executable: scriptPath);
+
+        var transcript = new Transcript { Id = "t3", Title = "Bad JSON Test", RawText = "Alice: Let's start." };
+        var analysis = await client.AnalyzeTranscriptAsync(transcript);
+
+        TestKit.Assert(analysis.Summary.Contains("weekly status"), "should regenerate via a fresh CLI invocation and successfully parse the second (valid) response");
+        TestKit.Assert(File.Exists(counterFile) && File.ReadAllText(counterFile).Trim() == "2", "the fake executable should have been invoked exactly twice (initial + one regeneration)");
+
+        File.Delete(scriptPath);
+        if (File.Exists(counterFile)) File.Delete(counterFile);
+    }
+}
+
+// Writes a small POSIX shell script whose FIRST invocation exits 0 with invalid JSON stdout,
+// and every subsequent invocation exits 0 with the given valid response — used to verify that a
+// JSON parse failure triggers a genuine second CLI invocation rather than re-parsing the same
+// broken text. Also increments a counter file so tests can assert the exact invocation count.
+static string WriteFakeCopilotScriptWithBadJsonThenValid(string validResponse, string counterFile)
+{
+    var scriptPath = Path.Combine(Path.GetTempPath(), $"fake-copilot-badjson-{Guid.NewGuid()}.sh");
+    var body =
+        $"#!/bin/bash\n" +
+        $"count=0\n" +
+        $"if [ -f \"{counterFile}\" ]; then count=$(cat \"{counterFile}\"); fi\n" +
+        $"count=$((count + 1))\n" +
+        $"echo \"$count\" > \"{counterFile}\"\n" +
+        $"if [ \"$count\" -eq 1 ]; then\n" +
+        $"  echo '{{\"summary\": \"broken' \n" +
+        $"  exit 0\n" +
+        $"else\n" +
+        $"  cat <<'FAKE_COPILOT_EOF'\n{validResponse}\nFAKE_COPILOT_EOF\n" +
+        $"  exit 0\n" +
+        $"fi\n";
+
+    File.WriteAllText(scriptPath, body);
+    var chmod = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("chmod", $"+x \"{scriptPath}\"") { UseShellExecute = false });
+    chmod!.WaitForExit();
+    return scriptPath;
 }
 
 // Writes a small POSIX shell script that stands in for the real `copilot` CLI, so process

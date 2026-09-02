@@ -59,13 +59,36 @@ Rules you MUST follow:
   ""speaker_quality"": [ { ""speaker"": string, ""clarity"": number, ""informativeness"": number, ""engagement"": number, ""rationale"": string } ]
 }";
 
+    // How many additional full CLI invocations to attempt when the model's response fails to
+    // parse as valid structured JSON. Re-parsing the exact same (invalid) text can never
+    // succeed, so each attempt here re-generates a fresh response instead.
+    private const int MaxJsonRegenerationAttempts = 2;
+
     public async Task<TranscriptAnalysis> AnalyzeTranscriptAsync(Transcript transcript)
     {
         var prompt = $"{SystemPrompt}\n\n---\nMeeting title: {transcript.Title ?? "not specified"}\n\nMeeting transcript:\n{transcript.RawText}";
 
-        var stdout = await RunCopilotWithRetryAsync(prompt).ConfigureAwait(false);
-        var jsonText = ExtractJson(stdout);
-        return ParseTranscriptAnalysisWithRetry(jsonText);
+        Exception? lastParseException = null;
+        for (var attempt = 0; attempt <= MaxJsonRegenerationAttempts; attempt++)
+        {
+            var stdout = await RunCopilotWithRetryAsync(prompt).ConfigureAwait(false);
+            var jsonText = ExtractJson(stdout);
+            try
+            {
+                return ParseTranscriptAnalysis(jsonText);
+            }
+            catch (Exception ex)
+            {
+                lastParseException = ex;
+                if (attempt < MaxJsonRegenerationAttempts)
+                {
+                    _logger.Warn($"Copilot CLI response was not valid structured JSON (attempt {attempt + 1}); regenerating.");
+                }
+            }
+        }
+
+        _logger.Error("Copilot CLI response was not valid structured JSON after all regeneration attempts.", lastParseException ?? new Exception("Unknown error"));
+        throw new InvalidOperationException("Copilot CLI never returned valid structured JSON after retries.", lastParseException);
     }
 
     private async Task<string> RunCopilotWithRetryAsync(string prompt)
@@ -234,21 +257,6 @@ Rules you MUST follow:
         }
 
         return text;
-    }
-
-    private TranscriptAnalysis ParseTranscriptAnalysisWithRetry(string contentJson)
-    {
-        try
-        {
-            return ParseTranscriptAnalysis(contentJson);
-        }
-        catch (Exception ex)
-        {
-            _logger.Error("Copilot CLI response was not valid structured JSON on first attempt.", ex);
-            // Single retry at the parsing layer; if it fails again, surface the exception so the
-            // caller can skip this transcript without marking it processed.
-            return ParseTranscriptAnalysis(contentJson);
-        }
     }
 
     /// <summary>Deterministically renders a speaker-labelled transcript from Fireflies API
