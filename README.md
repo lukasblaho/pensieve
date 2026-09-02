@@ -232,6 +232,17 @@ pulls the latest changes and re-checks prerequisites; it never overwrites an exi
    source, auto-delete, Obsidian export, Notion export) are **disabled by default** — enable each
    explicitly via its own flag.
 
+   > **If `WATCH_FOLDER` lives inside a cloud-sync client folder (e.g. Google Drive Desktop,
+   > OneDrive, Dropbox):** by default these clients can stream files on demand, meaning a file
+   > can appear in the folder before its content has actually finished downloading locally.
+   > Pensieve reads files directly off disk and does not fetch cloud-only content itself, so a
+   > transcript picked up too early could be processed with empty/partial content. Configure the
+   > watched folder (and its `Summaries/` sibling, if used) to always keep files downloaded
+   > locally instead of streaming them on demand — e.g. in Google Drive Desktop, right-click the
+   > folder and choose **"Make available offline"** (may also be labeled **"Available
+   > offline"**/"Mirror" depending on version); in OneDrive, disable **Files On-Demand** for that
+   > folder or mark it "Always keep on this device".
+
 2. Run a single sync pass (scans the watch folder — and the Fireflies API if enabled — for any
    new/changed transcripts, processes them, then exits):
 
