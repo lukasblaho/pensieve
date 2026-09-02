@@ -11,6 +11,7 @@
 
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 
 public sealed class MacNotifier
@@ -70,6 +71,19 @@ public sealed class MacNotifier
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Path to the compiled Pensieve.app's executable (built by install.sh via `osacompile`
+    /// from resources/PensieveNotifier.applescript), if present alongside the working
+    /// directory. When available, alerts are routed through it so macOS attributes the
+    /// notification's sender to "Pensieve" instead of osascript's generic "Script Editor"
+    /// identity.
+    /// </summary>
+    private static string? FindPensieveAppExecutable()
+    {
+        var path = Path.Combine(Directory.GetCurrentDirectory(), "Pensieve.app", "Contents", "MacOS", "applet");
+        return File.Exists(path) ? path : null;
+    }
+
     /// <summary>Shows a macOS Notification Center alert. No-ops (with a warning log) when not
     /// running on macOS. Never throws — failures are logged and swallowed.</summary>
     public void Notify(string title, string subtitle, string message)
@@ -82,18 +96,33 @@ public sealed class MacNotifier
 
         try
         {
-            var script = BuildAppleScript(title, subtitle, message, _sound);
+            var pensieveAppPath = FindPensieveAppExecutable();
 
             var psi = new ProcessStartInfo
             {
-                FileName = "osascript",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            psi.ArgumentList.Add("-e");
-            psi.ArgumentList.Add(script);
+
+            if (pensieveAppPath != null)
+            {
+                // Pensieve.app is a compiled AppleScript applet: run it with
+                // <title> <subtitle> <message> <sound> as its `argv`.
+                psi.FileName = pensieveAppPath;
+                psi.ArgumentList.Add(title ?? "");
+                psi.ArgumentList.Add(subtitle ?? "");
+                psi.ArgumentList.Add(message ?? "");
+                psi.ArgumentList.Add(_sound ?? "");
+            }
+            else
+            {
+                var script = BuildAppleScript(title, subtitle, message, _sound);
+                psi.FileName = "osascript";
+                psi.ArgumentList.Add("-e");
+                psi.ArgumentList.Add(script);
+            }
 
             using var process = Process.Start(psi);
             if (process == null)

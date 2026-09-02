@@ -205,6 +205,25 @@ fi
 mkdir -p "$INSTALL_DIR/data/logs"
 
 # --------------------------------------------------------------------------
+# 6b. Build a named "Pensieve.app" so notifications aren't attributed to
+#     the generic "Script Editor" identity that plain osascript alerts use.
+# --------------------------------------------------------------------------
+
+if command -v osacompile >/dev/null 2>&1; then
+  if [ -f "$INSTALL_DIR/resources/PensieveNotifier.applescript" ]; then
+    log "Building Pensieve.app (used for named notifications)..."
+    rm -rf "$INSTALL_DIR/Pensieve.app"
+    if osacompile -o "$INSTALL_DIR/Pensieve.app" "$INSTALL_DIR/resources/PensieveNotifier.applescript"; then
+      log "Pensieve.app built at $INSTALL_DIR/Pensieve.app."
+    else
+      warn "Failed to build Pensieve.app — notifications will fall back to the generic 'Script Editor' identity."
+    fi
+  fi
+else
+  warn "osacompile not found — notifications will fall back to the generic 'Script Editor' identity."
+fi
+
+# --------------------------------------------------------------------------
 # 7. Run tests as a sanity check
 # --------------------------------------------------------------------------
 
@@ -229,8 +248,20 @@ else
   DOTNET_TOOLS_DIR="$(dirname "$DOTNET_SCRIPT_PATH")"
   PLIST_LABEL="com.pensieve"
   PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+  AGENT_WRAPPER_PATH="${INSTALL_DIR}/pensieve-agent.sh"
 
   mkdir -p "$HOME/Library/LaunchAgents"
+
+  # Wrap the actual launch in a small script that sets argv[0] to "Pensieve" via
+  # `exec -a`, so Activity Monitor / `ps` show "Pensieve" as the process name
+  # instead of the generic "dotnet-script" binary name.
+  cat > "$AGENT_WRAPPER_PATH" <<WRAPPER
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${INSTALL_DIR}"
+exec -a "Pensieve" "${DOTNET_SCRIPT_PATH}" main.csx -- "${RUN_MODE}"
+WRAPPER
+  chmod +x "$AGENT_WRAPPER_PATH"
 
   cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -243,10 +274,7 @@ else
 
   <key>ProgramArguments</key>
   <array>
-    <string>${DOTNET_SCRIPT_PATH}</string>
-    <string>main.csx</string>
-    <string>--</string>
-    <string>${RUN_MODE}</string>
+    <string>${AGENT_WRAPPER_PATH}</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -295,7 +323,7 @@ PLIST
     log "Agent written but not loaded. Load it later with: launchctl load '$PLIST_PATH'"
   fi
 
-  log "To stop/uninstall the background agent: launchctl unload '$PLIST_PATH' && rm '$PLIST_PATH'"
+  log "To stop/uninstall the background agent: launchctl unload '$PLIST_PATH' && rm '$PLIST_PATH' '$AGENT_WRAPPER_PATH'"
 fi
 
 log "Done. Pensieve is installed at: $INSTALL_DIR"
