@@ -5,7 +5,9 @@
   "next_actions": [
     { "task": "Prepare release notes", "owner": "Bob", "due": "Friday" }
   ],
-  "tags": ["release", "planning"],
+  "meeting_type": "sync",
+  "category": "team",
+  "topics": ["release planning"],
   "keywords": ["weekly status", "release date"],
   "diagrams": []
 }

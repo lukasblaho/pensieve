@@ -122,7 +122,24 @@ public sealed class TranscriptAnalysis
     public List<string> Agreements { get; set; } = new();
     public List<string> OpenQuestions { get; set; } = new();
     public List<ActionItem> NextActions { get; set; } = new();
+
+    /// <summary>Flattened, display/storage-facing tag list (max 5): built from
+    /// MeetingType + Category + Topics, in that order. This is what note.md frontmatter,
+    /// keywords.json, Notion, GlobalVocabularyStore, and MeetingLinker all consume.</summary>
     public List<string> Tags { get; set; } = new();
+
+    /// <summary>The single tag describing what kind of meeting this was (e.g. "standup",
+    /// "planning", "one-to-one"). Freeform — not validated against a fixed enum.</summary>
+    public string MeetingType { get; set; } = "";
+
+    /// <summary>The single tag describing the general nature/domain of the meeting (e.g.
+    /// "technology", "design", "team", "one-to-one", "business"). Freeform.</summary>
+    public string Category { get; set; } = "";
+
+    /// <summary>1-3 short tags naming the key subject(s) actually discussed in this
+    /// transcript. Freeform, never invented beyond what the transcript supports.</summary>
+    public List<string> Topics { get; set; } = new();
+
     public List<string> Keywords { get; set; } = new();
     public List<DiagramItem> Diagrams { get; set; } = new();
 

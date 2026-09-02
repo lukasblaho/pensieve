@@ -43,7 +43,11 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
     in the body header) plus: a body header (title, date in Bratislava time, participants,
     Fireflies link/ID), summary, agreements, open questions, next actions (owner/due when
     explicitly stated), diagram links, and keywords (also rendered in **camelCase**, e.g.
-    `coldBrew`).
+    `coldBrew`). Tags are capped at **5 per meeting**, generated as three facets and then
+    flattened: one **meeting type** (e.g. standup, planning, one-to-one), one **category**
+    (e.g. technology, design, team, business), and 1-3 **topics** naming the key subject(s)
+    actually discussed — keeping tagging consistent instead of an unbounded pile of
+    near-duplicate phrases.
   - `diagrams/*.md` — one file per Mermaid diagram, **only created when the transcript explicitly
     discusses a flow, architecture, or component relationship**.
   - `keywords.json` — this meeting's own tag/keyword vocabulary, in canonical (non-camelCase)
@@ -93,7 +97,7 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
   default): purely mechanical (no LLM cross-meeting reasoning, preserving the anti-hallucination
   guarantee) — links a meeting to other meetings that are either part of the same **recurring
   series** (e.g. daily standups, weekly syncs — detected by normalizing the title and stripping
-  embedded dates/weekdays/times) or share at least `MEETING_LINK_MIN_SHARED_TAGS` (default 3)
+  embedded dates/weekdays/times) or share at least `MEETING_LINK_MIN_SHARED_TAGS` (default 2)
   tags/keywords with it (e.g. several differently-titled meetings about the same initiative).
   Maintains a mechanical index (`data/meetings-index.json`) of every linked meeting's title,
   date, folder, tags, and keywords — never re-analyzed by the LLM. Adds a **"Related Meetings"**

@@ -1,10 +1,10 @@
 #nullable enable
 // test-CopilotCliClient.csx
 // Verifies JSON extraction (incl. markdown-fenced responses), structured-JSON parsing for the
-// new analysis schema (summary/agreements/open_questions/next_actions/tags/keywords/diagrams),
-// and full process-invocation plumbing using a small fake "copilot" executable (a shell script)
-// instead of the real GitHub Copilot CLI, so tests never depend on network access,
-// authentication, or the CLI being installed.
+// analysis schema (summary/agreements/open_questions/next_actions/meeting_type/category/topics
+// [flattened into Tags, capped at 5]/keywords/diagrams), and full process-invocation plumbing
+// using a small fake "copilot" executable (a shell script) instead of the real GitHub Copilot
+// CLI, so tests never depend on network access, authentication, or the CLI being installed.
 
 #load "TestKit.csx"
 #load "../src/CopilotCliClient.csx"
@@ -62,14 +62,26 @@ TestKit.Section("CopilotCliClient: parses well-formed structured JSON (new analy
     TestKit.Assert(analysis.NextActions.Count == 1, "should parse 1 next action");
     TestKit.Assert(analysis.NextActions[0].Owner == "Bob", "action owner should be parsed correctly");
     TestKit.Assert(analysis.NextActions[0].Due == "Friday", "action due date should be parsed correctly");
-    TestKit.Assert(analysis.Tags.Count == 2 && analysis.Tags.Contains("release"), "tags should be parsed correctly");
+    TestKit.Assert(analysis.MeetingType == "sync", "meeting_type should be parsed correctly");
+    TestKit.Assert(analysis.Category == "team", "category should be parsed correctly");
+    TestKit.Assert(analysis.Topics.Count == 1 && analysis.Topics.Contains("release planning"), "topics should be parsed correctly");
+    TestKit.Assert(analysis.Tags.Count == 3 && analysis.Tags.SequenceEqual(new[] { "sync", "team", "release planning" }), "tags should be flattened from meeting_type + category + topics, in that order");
     TestKit.Assert(analysis.Keywords.Count == 2 && analysis.Keywords.Contains("weekly status"), "keywords should be parsed correctly");
     TestKit.Assert(analysis.Diagrams.Count == 0, "should parse 0 diagrams (empty array in fixture)");
 }
 
+TestKit.Section("CopilotCliClient: flattened Tags is hard-capped at 5 even if the model returns more topics");
+{
+    var jsonWithTooManyTopics = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"meeting_type\": \"planning\", \"category\": \"technology\", \"topics\": [\"a\", \"b\", \"c\", \"d\", \"e\"], \"keywords\": [], \"diagrams\": []}";
+    var analysis = CopilotCliClient.ParseTranscriptAnalysis(jsonWithTooManyTopics);
+
+    TestKit.Assert(analysis.Tags.Count == 5, "Tags should be hard-capped at 5 regardless of how many topics the model returns");
+    TestKit.Assert(analysis.Tags.SequenceEqual(new[] { "planning", "technology", "a", "b", "c" }), "Tags should keep meeting_type + category first, then truncate topics to fill the remaining slots");
+}
+
 TestKit.Section("CopilotCliClient: missing owner/due in a returned action falls back to 'not specified'");
 {
-    var jsonWithMissingFields = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [{\"task\": \"Do something\"}], \"tags\": [], \"keywords\": [], \"diagrams\": []}";
+    var jsonWithMissingFields = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [{\"task\": \"Do something\"}], \"keywords\": [], \"diagrams\": []}";
     var analysis = CopilotCliClient.ParseTranscriptAnalysis(jsonWithMissingFields);
 
     TestKit.Assert(analysis.NextActions[0].Owner == "not specified", "owner should default to 'not specified' when absent from the response");
@@ -78,7 +90,7 @@ TestKit.Section("CopilotCliClient: missing owner/due in a returned action falls 
 
 TestKit.Section("CopilotCliClient: parses diagrams only when explicitly present, never fabricates empty ones");
 {
-    var jsonWithDiagram = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"tags\": [], \"keywords\": [], \"diagrams\": [{\"title\": \"Data Flow\", \"mermaid\": \"graph TD; A-->B;\"}, {\"title\": \"Empty\", \"mermaid\": \"\"}]}";
+    var jsonWithDiagram = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"keywords\": [], \"diagrams\": [{\"title\": \"Data Flow\", \"mermaid\": \"graph TD; A-->B;\"}, {\"title\": \"Empty\", \"mermaid\": \"\"}]}";
     var analysis = CopilotCliClient.ParseTranscriptAnalysis(jsonWithDiagram);
 
     TestKit.Assert(analysis.Diagrams.Count == 1, "should only include diagrams with non-empty mermaid content, skipping the empty one");
@@ -88,7 +100,7 @@ TestKit.Section("CopilotCliClient: parses diagrams only when explicitly present,
 
 TestKit.Section("CopilotCliClient: parses speaker_quality ratings and clamps out-of-range values");
 {
-    var jsonWithQuality = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"tags\": [], \"keywords\": [], \"diagrams\": [], \"speaker_quality\": [{\"speaker\": \"Alice\", \"clarity\": 4, \"informativeness\": 5, \"engagement\": 3, \"rationale\": \"Explained the plan clearly.\"}, {\"speaker\": \"Bob\", \"clarity\": 9, \"informativeness\": -2, \"engagement\": 3.6, \"rationale\": \"Short answers only.\"}]}";
+    var jsonWithQuality = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"keywords\": [], \"diagrams\": [], \"speaker_quality\": [{\"speaker\": \"Alice\", \"clarity\": 4, \"informativeness\": 5, \"engagement\": 3, \"rationale\": \"Explained the plan clearly.\"}, {\"speaker\": \"Bob\", \"clarity\": 9, \"informativeness\": -2, \"engagement\": 3.6, \"rationale\": \"Short answers only.\"}]}";
     var analysis = CopilotCliClient.ParseTranscriptAnalysis(jsonWithQuality);
 
     TestKit.Assert(analysis.SpeakerQuality.Count == 2, "should parse 2 speaker quality ratings");
@@ -104,7 +116,7 @@ TestKit.Section("CopilotCliClient: parses speaker_quality ratings and clamps out
 
 TestKit.Section("CopilotCliClient: speaker_quality missing/empty is handled gracefully (no fabricated ratings)");
 {
-    var jsonNoQuality = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"tags\": [], \"keywords\": [], \"diagrams\": []}";
+    var jsonNoQuality = "{\"summary\": \"Test\", \"agreements\": [], \"open_questions\": [], \"next_actions\": [], \"keywords\": [], \"diagrams\": []}";
     var analysis = CopilotCliClient.ParseTranscriptAnalysis(jsonNoQuality);
 
     TestKit.Assert(analysis.SpeakerQuality.Count == 0, "should default to an empty list when speaker_quality is absent");
@@ -130,7 +142,7 @@ else
 
         TestKit.Assert(analysis.Summary.Contains("weekly status"), "analysis generated via the fake copilot executable should be parsed correctly");
         TestKit.Assert(analysis.NextActions.Count == 1, "should parse the next action from the fake executable's output");
-        TestKit.Assert(analysis.Tags.Contains("release"), "should parse tags from the fake executable's output");
+        TestKit.Assert(analysis.Tags.Contains("release planning"), "should parse tags from the fake executable's output");
 
         File.Delete(scriptPath);
     }

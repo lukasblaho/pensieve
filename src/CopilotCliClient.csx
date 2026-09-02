@@ -42,7 +42,11 @@ Rules you MUST follow:
 1. Base your analysis EXCLUSIVELY on the transcript text given below. Do not use any knowledge about other meetings, projects, or people beyond what is explicitly written here.
 2. NEVER invent or guess anything. Do not infer agreements, decisions, owners, due dates, open questions, tags, keywords, or diagrams that are not explicitly supported by the transcript text.
 3. If a decision/agreement, open question, owner, or due date is not EXPLICITLY stated in the transcript, use exactly the string ""not specified"" for that field (owner/due), or leave the relevant list empty. Do not guess.
-4. tags: propose 3 to 8 short topical tags (single words or short phrases) that describe what this specific transcript is about.
+4. Tags are STRICTLY CAPPED at 5 total per meeting, produced as three distinct facets so tagging stays consistent and comparable across meetings instead of an unstructured pile of near-duplicate phrases:
+   - meeting_type: EXACTLY ONE short tag naming what kind of meeting this was (e.g. ""standup"", ""sync"", ""planning"", ""brainstorming"", ""solutioning"", ""retrospective"", ""one-to-one"", ""review"" — these are examples, not a fixed list; pick whatever single term best fits, or the closest common term instead of coining a new synonym for the same thing).
+   - category: EXACTLY ONE short tag naming the general nature/domain of the meeting (e.g. ""technology"", ""design"", ""team"", ""one-to-one"", ""business"" — again examples, not a fixed list).
+   - topics: ONE to THREE short tags naming the key subject(s) actually discussed (e.g. project/feature/system names, or specific themes). Prefer reusing an existing common term over inventing a near-duplicate (e.g. prefer ""release planning"" consistently rather than sometimes ""release readiness"" or ""4.14 release"" for the same kind of topic).
+   Every tag must be a short single word or short phrase, grounded strictly in this transcript — never invented.
 5. keywords: list key terms/phrases that are actually used in this transcript (for a per-meeting vocabulary index). Do not invent terms not present in the text.
 6. diagrams: ONLY when the transcript explicitly discusses a process flow, system architecture, or component/data relationship, produce one or more Mermaid diagrams describing exactly what was discussed (each with a short title and valid Mermaid syntax in the ""mermaid"" field, without a surrounding ``` fence). If no such flow/architecture is discussed, return an empty array — do not invent a diagram.
 7. Do not open any files, run any commands, or use any tools — base your answer solely on the transcript text below.
@@ -53,7 +57,9 @@ Rules you MUST follow:
   ""agreements"": string[],
   ""open_questions"": string[],
   ""next_actions"": [ { ""task"": string, ""owner"": string, ""due"": string } ],
-  ""tags"": string[],
+  ""meeting_type"": string,
+  ""category"": string,
+  ""topics"": string[],
   ""keywords"": string[],
   ""diagrams"": [ { ""title"": string, ""mermaid"": string } ],
   ""speaker_quality"": [ { ""speaker"": string, ""clarity"": number, ""informativeness"": number, ""engagement"": number, ""rationale"": string } ]
@@ -285,8 +291,21 @@ Rules you MUST follow:
 
         analysis.Agreements = ReadStringArray(root, "agreements");
         analysis.OpenQuestions = ReadStringArray(root, "open_questions");
-        analysis.Tags = ReadStringArray(root, "tags");
         analysis.Keywords = ReadStringArray(root, "keywords");
+
+        analysis.MeetingType = root.TryGetProperty("meeting_type", out var mt) && mt.ValueKind == JsonValueKind.String ? mt.GetString()?.Trim() ?? "" : "";
+        analysis.Category = root.TryGetProperty("category", out var cat) && cat.ValueKind == JsonValueKind.String ? cat.GetString()?.Trim() ?? "" : "";
+        analysis.Topics = ReadStringArray(root, "topics");
+
+        // Flatten meeting_type + category + topics (in that order) into the single Tags list
+        // consumed by note.md frontmatter, keywords.json, Notion, GlobalVocabularyStore, and
+        // MeetingLinker. Hard-capped at 5 as a safety net against the LLM not following the
+        // "max 5" instruction exactly.
+        var flattenedTags = new System.Collections.Generic.List<string>();
+        if (!string.IsNullOrWhiteSpace(analysis.MeetingType)) flattenedTags.Add(analysis.MeetingType);
+        if (!string.IsNullOrWhiteSpace(analysis.Category)) flattenedTags.Add(analysis.Category);
+        flattenedTags.AddRange(analysis.Topics);
+        analysis.Tags = flattenedTags.Take(5).ToList();
 
         if (root.TryGetProperty("next_actions", out var actionsEl) && actionsEl.ValueKind == JsonValueKind.Array)
         {
