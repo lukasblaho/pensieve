@@ -92,7 +92,19 @@ calling an LLM HTTP API directly, so no OpenAI/LLM API key is needed.
   - **Obsidian**: copies the full meeting folder into a configured vault subfolder.
   - **Notion**: creates one page per meeting (title, tags, meeting date, import date, summary,
     agreements, open questions, next actions, diagrams as fenced `mermaid` code blocks, keywords,
-    related meetings) via the Notion API.
+    related meetings) via the Notion API. The target Notion database must already have these
+    exact properties (property *names* are hardcoded, not auto-created — Notion's API rejects
+    writes to properties that don't exist) before enabling `ENABLE_NOTION_EXPORT`:
+    | Property name | Type |
+    | --- | --- |
+    | `Name` | Title (Notion's default title property, renamed if needed) |
+    | `Tags` | Multi-select |
+    | `Imported At` | Date |
+    | `Meeting Date` | Date |
+
+    Add any missing ones via Notion → database → `+` → matching property type. A `400 validation_error`
+    with a message like `"Meeting Date is not a property that exists"` means one of these is missing
+    or misnamed in your database.
 - **Optional, config-gated related-meeting linking** (`ENABLE_MEETING_LINKING=true`, disabled by
   default): purely mechanical (no LLM cross-meeting reasoning, preserving the anti-hallucination
   guarantee) — links a meeting to other meetings that are either part of the same **recurring

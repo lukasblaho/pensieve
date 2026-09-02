@@ -11,6 +11,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 
@@ -45,6 +46,52 @@ TestKit.Section("NotionExporter: creates a page with title, tags, and analysis c
     TestKit.Assert(handler.LastRequestBody!.Contains("\"Meeting Date\""), "request body should include the meeting date property");
     TestKit.Assert(handler.LastRequestBody!.Contains("\"Imported At\""), "request body should include the imported-at date property");
     TestKit.Assert(handler.LastRequestBody!.Contains("Related Meetings"), "request body should always include a Related Meetings block, even when empty");
+}
+
+TestKit.Section("NotionExporter: splits a multi-paragraph/bulleted summary into separate Notion blocks instead of one Paragraph");
+{
+    var successResponse = "{\"id\":\"page-321\"}";
+    var handler = FakeHttpMessageHandler.Returning(HttpStatusCode.OK, successResponse);
+    var httpClient = new HttpClient(handler);
+    var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
+    var exporter = new NotionExporter(httpClient, "fake-token", "fake-db-id", logger);
+
+    var transcript = new Transcript { Id = "t-multi", Title = "Planning Sync" };
+    var analysis = new TranscriptAnalysis
+    {
+        Summary = "First paragraph about topic A.\n\nSecond paragraph about topic B.\n\n- Point one\n- Point two",
+    };
+
+    await exporter.ExportAsync(transcript, analysis);
+
+    TestKit.Assert(handler.LastRequestBody!.Contains("First paragraph about topic A."), "should include the first paragraph text");
+    TestKit.Assert(handler.LastRequestBody!.Contains("Second paragraph about topic B."), "should include the second paragraph text");
+    TestKit.Assert(handler.LastRequestBody!.Contains("\"bulleted_list_item\""), "should render the bullet lines as bulleted_list_item blocks");
+    TestKit.Assert(handler.LastRequestBody!.Contains("Point one") && handler.LastRequestBody!.Contains("Point two"), "should include both bullet points' text without the leading marker");
+    TestKit.Assert(!handler.LastRequestBody!.Contains("- Point one"), "bullet marker should be stripped from the block content");
+}
+
+TestKit.Section("NotionExporter: a plain single-paragraph summary still produces a single Paragraph block (backward compatible)");
+{
+    var successResponse = "{\"id\":\"page-654\"}";
+    var handler = FakeHttpMessageHandler.Returning(HttpStatusCode.OK, successResponse);
+    var httpClient = new HttpClient(handler);
+    var logger = new Logger(Path.Combine(Path.GetTempPath(), "pensieve-tests-logs"));
+    var exporter = new NotionExporter(httpClient, "fake-token", "fake-db-id", logger);
+
+    var transcript = new Transcript { Id = "t-plain", Title = "Quick Chat" };
+    var analysis = new TranscriptAnalysis { Summary = "Just one short summary paragraph." };
+
+    await exporter.ExportAsync(transcript, analysis);
+
+    TestKit.Assert(handler.LastRequestBody!.Contains("Just one short summary paragraph."), "should still include the plain summary text");
+
+    using var doc = System.Text.Json.JsonDocument.Parse(handler.LastRequestBody!);
+    var children = doc.RootElement.GetProperty("children").EnumerateArray().ToList();
+    var summaryHeadingIndex = children.FindIndex(b => b.GetProperty("type").GetString() == "heading_2"
+        && b.GetProperty("heading_2").GetProperty("rich_text")[0].GetProperty("text").GetProperty("content").GetString() == "Summary");
+    var summaryBlock = children[summaryHeadingIndex + 1];
+    TestKit.Assert(summaryBlock.GetProperty("type").GetString() == "paragraph", "the block directly following the Summary heading should be a single paragraph block for a plain prose summary");
 }
 
 TestKit.Section("NotionExporter: surfaces related meetings as a text block and (when a relation property name is given) a native relation property");

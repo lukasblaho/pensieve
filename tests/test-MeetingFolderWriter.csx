@@ -95,6 +95,21 @@ TestKit.Section("MeetingFolderWriter: writes transcript.md verbatim, note.md wit
     Directory.Delete(outputDir, recursive: true);
 }
 
+TestKit.Section("MeetingFolderWriter: preserves a multi-paragraph/bulleted summary verbatim (blank lines and bullet markers intact) in note.md");
+{
+    var outputDir = Path.Combine(Path.GetTempPath(), $"pensieve-notes-{Guid.NewGuid()}");
+    var transcript = new Transcript { Id = "multi1", Title = "Planning Sync", Date = 1700000000000, RawText = "Alice: hi" };
+    var multiParagraphSummary = "First paragraph about topic A.\n\nSecond paragraph about topic B.\n\n- Point one\n- Point two";
+    var analysis = new TranscriptAnalysis { Summary = multiParagraphSummary };
+
+    var folder = MeetingFolderWriter.WriteMeetingFolder(outputDir, transcript, analysis);
+    var note = File.ReadAllText(Path.Combine(folder, "note.md"));
+
+    TestKit.Assert(note.Contains(multiParagraphSummary), "note.md should include the multi-paragraph/bulleted summary verbatim, preserving blank lines and '- ' bullet markers so Markdown renders it as separate paragraphs/list items");
+
+    Directory.Delete(outputDir, recursive: true);
+}
+
 TestKit.Section("MeetingFolderWriter: writes metadata.json with app version and correct MD5 checksums");
 {
     var outputDir = Path.Combine(Path.GetTempPath(), $"pensieve-notes-{Guid.NewGuid()}");

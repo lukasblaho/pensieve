@@ -17,6 +17,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 public sealed class NotionRelatedMeetingRef
@@ -140,7 +141,7 @@ public sealed class NotionExporter
         var blocks = new List<object>();
 
         blocks.Add(Heading2("Summary"));
-        blocks.Add(Paragraph(string.IsNullOrWhiteSpace(analysis.Summary) ? "not specified" : analysis.Summary));
+        AddFormattedText(blocks, analysis.Summary);
 
         blocks.Add(Heading2("Agreements"));
         AddBulletedList(blocks, analysis.Agreements);
@@ -201,21 +202,35 @@ public sealed class NotionExporter
     {
         @object = "block",
         type = "heading_2",
-        heading_2 = new { rich_text = new object[] { RichText(text) } }
+        heading_2 = new { rich_text = RichTextRuns(text) }
+    };
+
+    private static object Heading3(string text) => new
+    {
+        @object = "block",
+        type = "heading_3",
+        heading_3 = new { rich_text = RichTextRuns(text) }
     };
 
     private static object Paragraph(string text) => new
     {
         @object = "block",
         type = "paragraph",
-        paragraph = new { rich_text = new object[] { RichText(text) } }
+        paragraph = new { rich_text = RichTextRuns(text) }
     };
 
     private static object ToDo(string text) => new
     {
         @object = "block",
         type = "to_do",
-        to_do = new { rich_text = new object[] { RichText(text) }, @checked = false }
+        to_do = new { rich_text = RichTextRuns(text), @checked = false }
+    };
+
+    private static object NumberedListItem(string text) => new
+    {
+        @object = "block",
+        type = "numbered_list_item",
+        numbered_list_item = new { rich_text = RichTextRuns(text) }
     };
 
     private static object CodeBlock(string code, string language) => new
@@ -224,6 +239,83 @@ public sealed class NotionExporter
         type = "code",
         code = new { rich_text = new object[] { RichText(code) }, language }
     };
+
+    private static readonly Regex NumberedListLineRegex = new Regex(@"^\d+[.)]\s+", RegexOptions.Compiled);
+    private static readonly Regex HeadingLineRegex = new Regex(@"^(#{1,6})\s+(.*)$", RegexOptions.Compiled);
+
+    /// <summary>Renders a free-form Markdown-ish text (e.g. the LLM-generated summary) as Notion
+    /// blocks instead of forcing it into a single Paragraph block: blank lines split the text into
+    /// paragraph groups; a group whose lines all start with "- "/"* " becomes bulleted_list_item
+    /// blocks, a group whose lines all start with "1. "/"1) " becomes numbered_list_item blocks
+    /// (markers stripped either way); a line starting with "#"-"######" becomes its own heading
+    /// block. Inline Markdown (**bold**, *italic*, `code`) is converted to real Notion text
+    /// annotations everywhere via <see cref="RichTextRuns"/> instead of being shown as literal
+    /// asterisks/backticks, since Notion does not render Markdown syntax embedded in plain text.</summary>
+    private static void AddFormattedText(List<object> blocks, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            blocks.Add(Paragraph("not specified"));
+            return;
+        }
+
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var currentGroup = new List<string>();
+
+        void FlushGroup()
+        {
+            if (currentGroup.Count == 0) return;
+
+            var isBulletGroup = currentGroup.All(l => l.TrimStart().StartsWith("- ") || l.TrimStart().StartsWith("* "));
+            var isNumberedGroup = !isBulletGroup && currentGroup.All(l => NumberedListLineRegex.IsMatch(l.TrimStart()));
+
+            if (isBulletGroup)
+            {
+                foreach (var line in currentGroup)
+                {
+                    var trimmed = line.TrimStart();
+                    var content = trimmed.Substring(2).Trim();
+                    blocks.Add(BulletedListItem(string.IsNullOrWhiteSpace(content) ? "not specified" : content));
+                }
+            }
+            else if (isNumberedGroup)
+            {
+                foreach (var line in currentGroup)
+                {
+                    var trimmed = line.TrimStart();
+                    var content = NumberedListLineRegex.Replace(trimmed, "", 1).Trim();
+                    blocks.Add(NumberedListItem(string.IsNullOrWhiteSpace(content) ? "not specified" : content));
+                }
+            }
+            else
+            {
+                blocks.Add(Paragraph(string.Join(" ", currentGroup.Select(l => l.Trim())).Trim()));
+            }
+
+            currentGroup = new List<string>();
+        }
+
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                FlushGroup();
+                continue;
+            }
+
+            var headingMatch = HeadingLineRegex.Match(line.TrimStart());
+            if (headingMatch.Success)
+            {
+                FlushGroup();
+                var content = headingMatch.Groups[2].Value.Trim();
+                blocks.Add(Heading3(string.IsNullOrWhiteSpace(content) ? "not specified" : content));
+                continue;
+            }
+
+            currentGroup.Add(line);
+        }
+        FlushGroup();
+    }
 
     private static void AddBulletedList(List<object> blocks, List<string> items)
     {
@@ -242,7 +334,53 @@ public sealed class NotionExporter
     {
         @object = "block",
         type = "bulleted_list_item",
-        bulleted_list_item = new { rich_text = new object[] { RichText(text) } }
+        bulleted_list_item = new { rich_text = RichTextRuns(text) }
+    };
+
+    private static readonly Regex InlineMarkdownRegex = new Regex(
+        @"\*\*(?<b1>[^*]+?)\*\*|__(?<b2>[^_]+?)__|(?<!\w)\*(?<i1>[^*]+?)\*(?!\w)|(?<!\w)_(?<i2>[^_]+?)_(?!\w)|`(?<c>[^`]+?)`",
+        RegexOptions.Compiled);
+
+    /// <summary>Converts inline Markdown (**bold**, __bold__, *italic*/_italic_, `code`) in
+    /// <paramref name="text"/> into a sequence of Notion rich_text objects with real bold/italic/
+    /// code annotations, instead of forwarding the raw Markdown punctuation as literal characters
+    /// (Notion does not interpret Markdown syntax embedded in plain text).</summary>
+    private static object[] RichTextRuns(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return new object[] { RichText(text ?? "") };
+
+        var runs = new List<object>();
+        var lastIndex = 0;
+
+        foreach (Match m in InlineMarkdownRegex.Matches(text))
+        {
+            if (m.Index > lastIndex)
+            {
+                runs.Add(RichText(text.Substring(lastIndex, m.Index - lastIndex)));
+            }
+
+            if (m.Groups["b1"].Success) runs.Add(AnnotatedRichText(m.Groups["b1"].Value, bold: true));
+            else if (m.Groups["b2"].Success) runs.Add(AnnotatedRichText(m.Groups["b2"].Value, bold: true));
+            else if (m.Groups["i1"].Success) runs.Add(AnnotatedRichText(m.Groups["i1"].Value, italic: true));
+            else if (m.Groups["i2"].Success) runs.Add(AnnotatedRichText(m.Groups["i2"].Value, italic: true));
+            else if (m.Groups["c"].Success) runs.Add(AnnotatedRichText(m.Groups["c"].Value, code: true));
+
+            lastIndex = m.Index + m.Length;
+        }
+
+        if (lastIndex < text.Length)
+        {
+            runs.Add(RichText(text.Substring(lastIndex)));
+        }
+
+        return runs.Count == 0 ? new object[] { RichText(text) } : runs.ToArray();
+    }
+
+    private static object AnnotatedRichText(string text, bool bold = false, bool italic = false, bool code = false) => new
+    {
+        type = "text",
+        text = new { content = Truncate(text) },
+        annotations = new { bold, italic, code }
     };
 
     private static object RichText(string text) => new { type = "text", text = new { content = Truncate(text) } };
