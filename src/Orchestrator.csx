@@ -2,9 +2,13 @@
 // Orchestrator.csx
 // Wires: folder watch (+ optional Fireflies API source) -> analyze -> write meeting folder ->
 // update global vocabulary -> mark processed -> optional delete from Fireflies -> optional
-// Obsidian/Notion exports. Every step is independently idempotent via StateStore so a crash or
-// transient failure at any point is safely retried on the next pass without reprocessing
-// completed work or touching the original transcript source.
+// Obsidian/Notion exports. Analysis + folder writing is idempotent via StateStore's content-hash
+// check. Each optional step (Fireflies deletion, Obsidian export, Notion export) is ALSO
+// independently tracked and retried: a meeting that is fully analyzed but has a pending/failed
+// optional step is neither skipped forever nor fully reprocessed — only the missing step(s) are
+// retried (reusing the cached analysis, no re-invocation of the Copilot CLI), and every
+// step/export is idempotency-guarded against having already completed so it is never repeated
+// (e.g. never creates a second Notion page for the same meeting).
 
 #load "Config.csx"
 #load "Logging.csx"
@@ -26,6 +30,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 public sealed class Orchestrator
@@ -41,6 +47,14 @@ public sealed class Orchestrator
     private readonly NotionExporter? _notionExporter;
     private readonly MacNotifier? _macNotifier;
     private readonly Logger _logger;
+
+    // Serializes per-meeting processing end-to-end (parse -> check state -> analyze -> write ->
+    // export). `watch` mode can otherwise invoke TryProcessFolderFileAsync concurrently for
+    // different files (one FileSystemWatcher debounce Timer per file); without this, two threads
+    // could each observe "not yet processed" before either writes state, leading to duplicate
+    // analysis/export work for the same meeting. Throughput isn't a concern here, so a single
+    // global lock is the simplest correct fix.
+    private readonly SemaphoreSlim _processingLock = new SemaphoreSlim(1, 1);
 
     public Orchestrator(
         AgentConfig config,
@@ -115,15 +129,25 @@ public sealed class Orchestrator
 
         var sourceKey = filePath;
 
-        if (_stateStore.IsUpToDate(sourceKey, transcript.ContentHash))
-        {
-            _logger.Info($"Skipping '{filePath}': already processed and unchanged.");
-            return false;
-        }
-
+        await _processingLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            await ProcessTranscriptAsync(transcript, sourceKey).ConfigureAwait(false);
+            if (IsFullyProcessed(sourceKey, transcript.ContentHash))
+            {
+                _logger.Info($"Skipping '{filePath}': already processed and unchanged.");
+                return false;
+            }
+
+            var pendingRecord = GetRecordEligibleForPendingRetry(sourceKey, transcript.ContentHash);
+
+            if (pendingRecord != null)
+            {
+                await RetryPendingStepsAsync(transcript, sourceKey, pendingRecord).ConfigureAwait(false);
+            }
+            else
+            {
+                await ProcessTranscriptAsync(transcript, sourceKey).ConfigureAwait(false);
+            }
             return true;
         }
         catch (Exception ex)
@@ -131,6 +155,37 @@ public sealed class Orchestrator
             _logger.Error($"Failed to process folder transcript '{filePath}'; will retry next sync.", ex);
             return false;
         }
+        finally
+        {
+            _processingLock.Release();
+        }
+    }
+
+    /// <summary>True when this meeting is analyzed, unchanged, AND every enabled optional step
+    /// (Fireflies deletion, Obsidian export, Notion export) has already completed — nothing left
+    /// to do for it.</summary>
+    private bool IsFullyProcessed(string sourceKey, string contentHash)
+    {
+        return _stateStore.IsFullyProcessed(
+            sourceKey, contentHash,
+            needsDeletion: _config.FirefliesAutoDeleteAfterProcessing,
+            needsObsidianExport: _config.EnableObsidianExport,
+            needsNotionExport: _config.EnableNotionExport);
+    }
+
+    /// <summary>Returns the existing record when this meeting was already analyzed (unchanged
+    /// content hash) with a cached analysis available, so pending steps can be retried without
+    /// re-invoking the Copilot CLI. Returns null when there is no usable cached analysis (e.g. a
+    /// record written before <see cref="MeetingRecord.AnalysisJson"/> existed), in which case the
+    /// caller should fall back to a full reprocessing pass instead.</summary>
+    private MeetingRecord? GetRecordEligibleForPendingRetry(string sourceKey, string contentHash)
+    {
+        var record = _stateStore.GetRecord(sourceKey);
+        if (record != null && record.Analyzed && record.ContentHash == contentHash && !string.IsNullOrWhiteSpace(record.AnalysisJson))
+        {
+            return record;
+        }
+        return null;
     }
 
     private async Task<int> RunFirefliesApiSyncAsync()
@@ -151,16 +206,28 @@ public sealed class Orchestrator
         foreach (var transcript in ordered)
         {
             var sourceKey = $"fireflies:{transcript.Id}";
-            if (_stateStore.IsUpToDate(sourceKey, transcript.Id))
-            {
-                continue; // API transcripts are immutable once fetched; ID itself is the hash.
-            }
 
-            transcript.RawText = CopilotCliClient.BuildTranscriptText(transcript);
-
+            await _processingLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                await ProcessTranscriptAsync(transcript, sourceKey).ConfigureAwait(false);
+                // API transcripts are immutable once fetched; ID itself is the content hash.
+                if (IsFullyProcessed(sourceKey, transcript.Id))
+                {
+                    continue;
+                }
+
+                var pendingRecord = GetRecordEligibleForPendingRetry(sourceKey, transcript.Id);
+
+                transcript.RawText = CopilotCliClient.BuildTranscriptText(transcript);
+
+                if (pendingRecord != null)
+                {
+                    await RetryPendingStepsAsync(transcript, sourceKey, pendingRecord).ConfigureAwait(false);
+                }
+                else
+                {
+                    await ProcessTranscriptAsync(transcript, sourceKey).ConfigureAwait(false);
+                }
                 processedCount++;
 
                 if (transcript.Date.HasValue && (!_stateStore.LastProcessedDate.HasValue || transcript.Date.Value > _stateStore.LastProcessedDate.Value))
@@ -171,6 +238,10 @@ public sealed class Orchestrator
             catch (Exception ex)
             {
                 _logger.Error($"Failed to process Fireflies API transcript '{transcript.Id}'; will retry next sync.", ex);
+            }
+            finally
+            {
+                _processingLock.Release();
             }
         }
 
@@ -236,7 +307,9 @@ public sealed class Orchestrator
             });
         }
 
-        // 6. Persist state now that analysis + writing succeeded.
+        // 6. Persist state now that analysis + writing succeeded. AnalysisJson caches the
+        // structured analysis so a later sync pass can retry any pending optional step below
+        // (deletion/export) without re-invoking the Copilot CLI.
         var record = new MeetingRecord
         {
             SourceKey = sourceKey,
@@ -245,12 +318,52 @@ public sealed class Orchestrator
             FirefliesId = transcript.FirefliesId,
             MeetingId = transcript.Id,
             Analyzed = true,
+            AnalysisJson = JsonSerializer.Serialize(analysis),
         };
         _stateStore.UpsertRecord(record);
 
-        // 7. Optional: delete the transcript from Fireflies (opt-in, irreversible). Only
-        // attempted when an ID was actually resolved — never guessed.
-        if (_config.FirefliesAutoDeleteAfterProcessing && transcript.FirefliesId != null && _firefliesClient != null)
+        await RunPendingOptionalStepsAsync(transcript, analysis, relatedEntries, sourceKey, record).ConfigureAwait(false);
+
+        // 9. Optional: show a macOS Notification Center alert that the meeting was processed.
+        if (_config.EnableMacOsNotifications && _macNotifier != null)
+        {
+            try
+            {
+                var title = string.IsNullOrWhiteSpace(transcript.Title) ? "Meeting processed" : transcript.Title!;
+                var subtitle = "Pensieve";
+                var message = !string.IsNullOrWhiteSpace(analysis.Summary)
+                    ? (analysis.Summary.Length > 120 ? analysis.Summary.Substring(0, 117) + "..." : analysis.Summary)
+                    : "Meeting transcript has been processed.";
+                _macNotifier.Notify(title, subtitle, message);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("macOS notification failed; this does not affect processing state.", ex);
+            }
+        }
+
+        _logger.Info($"Finished transcript '{transcript.Id}'.");
+    }
+
+    /// <summary>
+    /// Runs the optional per-meeting steps (Fireflies deletion, Obsidian export, Notion export)
+    /// that come after analysis, each independently guarded so it is only attempted when its
+    /// feature is enabled AND it hasn't already completed for this meeting (per
+    /// <paramref name="record"/>'s flags) — this is what makes a previously-failed export/delete
+    /// retryable on the next sync pass without ever repeating a step that already succeeded
+    /// (e.g. creating a second Notion page for the same meeting).
+    /// </summary>
+    private async Task RunPendingOptionalStepsAsync(
+        Transcript transcript,
+        TranscriptAnalysis analysis,
+        List<MeetingIndexEntry> relatedEntries,
+        string sourceKey,
+        MeetingRecord record)
+    {
+        // Optional: delete the transcript from Fireflies (opt-in, irreversible). Only attempted
+        // when an ID was actually resolved — never guessed — and not already done.
+        if (_config.FirefliesAutoDeleteAfterProcessing && !record.DeletedFromFireflies
+            && transcript.FirefliesId != null && _firefliesClient != null)
         {
             try
             {
@@ -264,12 +377,14 @@ public sealed class Orchestrator
             }
         }
 
-        // 8. Optional exports.
-        if (_config.EnableObsidianExport && _obsidianExporter != null)
+        // Optional exports — each guarded against having already succeeded, so a retry after a
+        // partial failure never re-exports/duplicates a step that already completed.
+        if (_config.EnableObsidianExport && !record.ObsidianExported
+            && _obsidianExporter != null && !string.IsNullOrWhiteSpace(record.MeetingFolder))
         {
             try
             {
-                _obsidianExporter.Export(meetingFolder);
+                _obsidianExporter.Export(record.MeetingFolder!);
                 _stateStore.MarkObsidianExported(sourceKey);
             }
             catch (Exception ex)
@@ -278,7 +393,7 @@ public sealed class Orchestrator
             }
         }
 
-        if (_config.EnableNotionExport && _notionExporter != null)
+        if (_config.EnableNotionExport && !record.NotionExported && _notionExporter != null)
         {
             try
             {
@@ -302,26 +417,40 @@ public sealed class Orchestrator
                 _logger.Error("Notion export failed; will retry next sync.", ex);
             }
         }
+    }
 
-        // 9. Optional: show a macOS Notification Center alert that the meeting was processed.
-        if (_config.EnableMacOsNotifications && _macNotifier != null)
+    /// <summary>
+    /// For a meeting that was already fully analyzed (unchanged content hash) but still has at
+    /// least one enabled optional step pending (deletion/export previously failed), retries only
+    /// those pending steps — reusing the cached <see cref="MeetingRecord.AnalysisJson"/> instead
+    /// of re-invoking the Copilot CLI. Related-meeting links are recomputed (purely mechanical,
+    /// no LLM call) from the cached tags/keywords so the Notion relation property/body stay
+    /// accurate even if other meetings have been linked/exported since.
+    /// </summary>
+    private async Task RetryPendingStepsAsync(Transcript transcript, string sourceKey, MeetingRecord record)
+    {
+        var analysis = JsonSerializer.Deserialize<TranscriptAnalysis>(record.AnalysisJson!)
+            ?? throw new InvalidOperationException($"Cached analysis for '{sourceKey}' failed to deserialize.");
+
+        var relatedEntries = new List<MeetingIndexEntry>();
+        if (_config.EnableMeetingLinking && _meetingIndexStore != null)
         {
-            try
+            var seriesKey = SeriesKeyGenerator.Generate(transcript.Title);
+            var current = new MeetingIndexEntry
             {
-                var title = string.IsNullOrWhiteSpace(transcript.Title) ? "Meeting processed" : transcript.Title!;
-                var subtitle = "Pensieve";
-                var message = !string.IsNullOrWhiteSpace(analysis.Summary)
-                    ? (analysis.Summary.Length > 120 ? analysis.Summary.Substring(0, 117) + "..." : analysis.Summary)
-                    : "Meeting transcript has been processed.";
-                _macNotifier.Notify(title, subtitle, message);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error("macOS notification failed; this does not affect processing state.", ex);
-            }
+                MeetingId = transcript.Id,
+                Title = transcript.Title ?? "",
+                DateEpochMs = transcript.Date,
+                Tags = analysis.Tags,
+                Keywords = analysis.Keywords,
+                SeriesKey = seriesKey,
+            };
+            relatedEntries = MeetingLinker.FindRelated(
+                current, _meetingIndexStore.All(), _config.MeetingLinkMinSharedTags, _config.MeetingLinkMaxRelated);
         }
 
-        _logger.Info($"Finished transcript '{transcript.Id}'.");
+        _logger.Info($"Meeting '{transcript.Id}' already analyzed; retrying pending step(s) only (no re-analysis).");
+        await RunPendingOptionalStepsAsync(transcript, analysis, relatedEntries, sourceKey, record).ConfigureAwait(false);
     }
 
     /// <summary>Starts live folder watching for the `watch` command; new files are processed as

@@ -104,3 +104,60 @@ TestKit.Section("StateStore: MarkNotionExported persists the returned Notion pag
 
     File.Delete(tempPath);
 }
+
+TestKit.Section("StateStore: IsFullyProcessed is false while an enabled optional step is still pending");
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pensieve-state-{Guid.NewGuid()}.json");
+    var store = new StateStore(tempPath);
+
+    store.UpsertRecord(new MeetingRecord { SourceKey = "file1.md", ContentHash = "hash-a", Analyzed = true, AnalysisJson = "{}" });
+
+    TestKit.Assert(
+        !store.IsFullyProcessed("file1.md", "hash-a", needsDeletion: false, needsObsidianExport: false, needsNotionExport: true),
+        "should NOT be fully processed when Notion export is enabled but hasn't happened yet (this is the 'export error not retried' bug fix)");
+
+    store.MarkNotionExported("file1.md", "page-1");
+
+    TestKit.Assert(
+        store.IsFullyProcessed("file1.md", "hash-a", needsDeletion: false, needsObsidianExport: false, needsNotionExport: true),
+        "should be fully processed once the only enabled optional step (Notion export) has completed");
+
+    TestKit.Assert(
+        store.IsFullyProcessed("file1.md", "hash-a", needsDeletion: false, needsObsidianExport: false, needsNotionExport: false),
+        "should be fully processed when no optional steps are enabled at all, regardless of their flags");
+
+    File.Delete(tempPath);
+}
+
+TestKit.Section("StateStore: IsFullyProcessed is false when analysis is missing or the content hash changed");
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pensieve-state-{Guid.NewGuid()}.json");
+    var store = new StateStore(tempPath);
+
+    TestKit.Assert(
+        !store.IsFullyProcessed("no-such-key", "hash-a", false, false, false),
+        "an unknown source key should never be considered fully processed");
+
+    store.UpsertRecord(new MeetingRecord { SourceKey = "file1.md", ContentHash = "hash-a", Analyzed = true });
+    TestKit.Assert(
+        !store.IsFullyProcessed("file1.md", "hash-b", false, false, false),
+        "a changed content hash should never be considered fully processed, even with no optional steps enabled");
+
+    File.Delete(tempPath);
+}
+
+TestKit.Section("StateStore: AnalysisJson round-trips through UpsertRecord so pending steps can be retried without re-analysis");
+{
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pensieve-state-{Guid.NewGuid()}.json");
+    var store = new StateStore(tempPath);
+
+    store.UpsertRecord(new MeetingRecord { SourceKey = "file1.md", ContentHash = "hash-a", Analyzed = true, AnalysisJson = "{\"summary\":\"hi\"}" });
+
+    TestKit.Assert(store.GetRecord("file1.md")!.AnalysisJson == "{\"summary\":\"hi\"}", "AnalysisJson should be persisted as-is");
+
+    var reloaded = new StateStore(tempPath);
+    TestKit.Assert(reloaded.GetRecord("file1.md")!.AnalysisJson == "{\"summary\":\"hi\"}", "AnalysisJson should survive a reload from disk");
+
+    File.Delete(tempPath);
+}
+
