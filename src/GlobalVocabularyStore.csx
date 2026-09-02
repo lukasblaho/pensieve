@@ -47,6 +47,10 @@ public sealed class GlobalVocabularyStore
     private readonly string _path;
     private readonly GlobalVocabulary _vocabulary;
     private readonly Dictionary<string, string> _aliasLookup;
+    // Guards all reads/mutations below. `watch` mode can invoke processing for multiple
+    // different transcript files concurrently (one FileSystemWatcher debounce Timer per file),
+    // and this store's Dictionaries are not otherwise thread-safe.
+    private readonly object _lock = new object();
 
     public GlobalVocabularyStore(string path)
     {
@@ -95,9 +99,12 @@ public sealed class GlobalVocabularyStore
     /// misspellings/variants are merged into their canonical entry.</summary>
     public void AddMeeting(string meetingId, IEnumerable<string> tags, IEnumerable<string> keywords)
     {
-        AddTerms(_vocabulary.Tags, tags, meetingId);
-        AddTerms(_vocabulary.Keywords, keywords, meetingId);
-        Save();
+        lock (_lock)
+        {
+            AddTerms(_vocabulary.Tags, tags, meetingId);
+            AddTerms(_vocabulary.Keywords, keywords, meetingId);
+            Save();
+        }
     }
 
     private void AddTerms(Dictionary<string, VocabularyEntry> dict, IEnumerable<string> terms, string meetingId)
@@ -126,8 +133,12 @@ public sealed class GlobalVocabularyStore
         }
     }
 
-    public GlobalVocabulary Snapshot() => _vocabulary;
+    public GlobalVocabulary Snapshot()
+    {
+        lock (_lock) { return _vocabulary; }
+    }
 
+    // Callers must already hold `_lock`.
     private void Save()
     {
         var dir = Path.GetDirectoryName(_path);

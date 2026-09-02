@@ -49,6 +49,8 @@ public sealed class MeetingIndexStore
 {
     private readonly string _path;
     private readonly MeetingIndex _index;
+    // Guards all reads/mutations below; see GlobalVocabularyStore for why this is needed.
+    private readonly object _lock = new object();
 
     public MeetingIndexStore(string path)
     {
@@ -74,16 +76,23 @@ public sealed class MeetingIndexStore
 
     /// <summary>All indexed meeting entries (used as candidates for related-meeting matching).
     /// Not guaranteed to be in any particular order.</summary>
-    public IReadOnlyList<MeetingIndexEntry> All() => _index.Meetings.Values.ToList();
+    public IReadOnlyList<MeetingIndexEntry> All()
+    {
+        lock (_lock) { return _index.Meetings.Values.ToList(); }
+    }
 
     /// <summary>Adds or replaces this meeting's index entry (idempotent by meetingId) and
     /// persists immediately.</summary>
     public void AddOrUpdate(MeetingIndexEntry entry)
     {
-        _index.Meetings[entry.MeetingId] = entry;
-        Save();
+        lock (_lock)
+        {
+            _index.Meetings[entry.MeetingId] = entry;
+            Save();
+        }
     }
 
+    // Callers must already hold `_lock`.
     private void Save()
     {
         var dir = Path.GetDirectoryName(_path);
